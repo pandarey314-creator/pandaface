@@ -1,0 +1,695 @@
+{
+"schemaVersion": "1.0.0",
+"generatedAt": "2026-11-20",
+"project": {
+"name": "CamLink USB",
+"role": "mobile_camera_transmitter",
+"description": "Aplicacion Android (Kotlin + Jetpack Compose) que captura video en tiempo real con Camera2/MediaCodec y lo transmite hacia una PC por USB (ADB loopback o USB Tethering RNDIS) con latencia ultrabaja.",
+"applicationId": "com.aistudio.camlinkusb.vkrqmn",
+"namespace": "com.example",
+"androidSdk": {
+"minSdk": 24,
+"targetSdk": 36,
+"compileSdk": 36,
+"javaCompatibility": "VERSION_11"
+},
+"buildToolchain": {
+"agp": "9.1.1",
+"kotlin": "2.4.21",
+"composeBom": "2024.09.00",
+"buildSystem": "Gradle Kotlin DSL"
+}
+},
+"pcCompanionRole": {
+"targetRole": "pc_usb_video_receiver_and_input_source",
+"summary": "El proyecto de PC debe descubrir el telefono conectado por USB (via ADB forward o puerta de enlace RNDIS / UDP), consultar su estado HTTP, seleccionar o solicitar el protocolo adecuado y decodificar en tiempo real el flujo de video entrante para mostrarlo o exponerlo como entrada de camara/video.",
+"audioSupport": false,
+"audioNote": "Actualmente la APK transmite exclusivamente video (sin pista de audio)."
+},
+"dependenciesAndStack": {
+"mobileLibraries": [
+"androidx.camera:camera-camera2:1.5.0",
+"androidx.camera:camera-core:1.5.0",
+"androidx.camera:camera-lifecycle:1.5.0",
+"androidx.camera:camera-view:1.5.0",
+"androidx.datastore:datastore-preferences:1.1.7",
+"androidx.navigation:navigation-compose:2.8.9",
+"androidx.compose.material3",
+"androidx.compose.material-icons-extended",
+"org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2",
+"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2"
+],
+"androidSystemApis": [
+"android.hardware.camera2 (CameraManager, CameraDevice, CameraCaptureSession, CaptureRequest)",
+"android.media.MediaCodec (H.264/AVC & H.265/HEVC hardware encoder with COLOR_FormatSurface)",
+"android.media.ImageReader + android.graphics.YuvImage (YUV_420_888 -> NV21 -> JPEG para MJPEG)",
+"java.net.ServerSocket / Socket / DatagramSocket",
+"android.hardware.usb.action.USB_STATE",
+"ForegroundService (foregroundServiceType=camera) + PARTIAL_WAKE_LOCK"
+],
+"androidPermissions": [
+"android.permission.CAMERA",
+"android.permission.INTERNET",
+"android.permission.ACCESS_NETWORK_STATE",
+"android.permission.ACCESS_WIFI_STATE",
+"android.permission.FOREGROUND_SERVICE",
+"android.permission.FOREGROUND_SERVICE_CAMERA",
+"android.permission.POST_NOTIFICATIONS",
+"android.permission.WAKE_LOCK"
+],
+"pcRecommendedToolsAndLibraries": {
+"usbDriversAndCli": {
+"adb": "Google Android Platform Tools (opcional si el usuario usa USB Tethering RNDIS; winget install Google.PlatformTools)",
+"usbTethering": "Controlador RNDIS/NCM nativo de Windows/Linux/macOS (sin instalar ADB)"
+},
+"videoDecoders": [
+{
+"name": "FFmpeg / libavcodec / PyAV / ffplay",
+"useCase": "Decodificacion hardware/software de latencia ultrabaja para H264_TCP, HEVC_TCP y MJPEG_HTTP",
+"windowsInstall": "winget install Gyan.FFmpeg"
+},
+{
+"name": "OpenCV (cv2.VideoCapture con backend CAP_FFMPEG)",
+"useCase": "Ingesta directa de frames numpy/Mat para vision por computadora o camara virtual"
+},
+{
+"name": "GStreamer (tcpclientsrc + h264parse + decodebin / souphttpsrc + jpegdec)",
+"useCase": "Pipelines multimedia de muy baja latencia en C++/Rust/Python"
+},
+{
+"name": "VLC / libVLC",
+"useCase": "Reproduccion o embedding con --demux=h264 --network-caching=0"
+},
+{
+"name": "HTTP Client + JPEG Decoder nativo",
+"useCase": "Consumir MJPEG_HTTP sin dependencias pesadas de codecs H.264/HEVC"
+}
+],
+"virtualWebcamOutputOptions": [
+"Windows: OBS Virtual Camera / UnityCapture / DirectShow Filter / pyvirtualcam",
+"Linux: v4l2loopback + ffmpeg -f h264 -i tcp://... -f v4l2 /dev/videoX",
+"macOS: CoreMediaIO Camera Extension / OBS Virtual Camera"
+]
+}
+},
+"architectureFiles": {
+"appEntry": "app/src/main/java/com/example/CamLinkApp.kt",
+"mainActivity": "app/src/main/java/com/example/MainActivity.kt",
+"settingsStore": "app/src/main/java/com/example/data/StreamSettings.kt",
+"cameraInspection": "app/src/main/java/com/example/stream/CameraCapabilities.kt",
+"streamEngine": "app/src/main/java/com/example/stream/StreamEngine.kt",
+"socketServer": "app/src/main/java/com/example/stream/SocketStreamServer.kt",
+"discoveryAndControl": "app/src/main/java/com/example/stream/UdpDiscoveryBeacon.kt",
+"usbMonitor": "app/src/main/java/com/example/stream/UsbDiagnosticsMonitor.kt",
+"foregroundService": "app/src/main/java/com/example/service/CameraStreamService.kt",
+"pcAutoLauncherTemplate": "app/src/main/res/raw/camlink_autopc.bat",
+"pcAutoLauncherHelper": "app/src/main/java/com/example/stream/PcAutoLauncherScript.kt",
+"uiViewModel": "app/src/main/java/com/example/ui/viewmodel/StreamViewModel.kt",
+"uiScreens": [
+"app/src/main/java/com/example/ui/screens/StreamScreen.kt",
+"app/src/main/java/com/example/ui/screens/PcSetupScreen.kt",
+"app/src/main/java/com/example/ui/screens/SettingsScreen.kt"
+]
+},
+"networkContract": {
+"bindAddress": "0.0.0.0",
+"ports": {
+"videoPort": {
+"default": 7878,
+"validRange": [1024, 65535],
+"protocol": "TCP",
+"description": "Socket principal de salida de video (H264 raw TCP, HEVC raw TCP o HTTP MJPEG segun configuracion)."
+},
+"controlHttpPort": {
+"formula": "videoPort + 1",
+"default": 7879,
+"protocol": "TCP (HTTP/1.1)",
+"description": "Servidor HTTP ligero de estado y cambio dinamico de protocolo. Activo solo mientras el stream esta transmitiendo."
+},
+"discoveryUdpPort": {
+"fixedPort": 7879,
+"protocol": "UDP",
+"description": "Puerto fijo para beacons periodicos y consultas CAMLINK_WHO."
+}
+},
+"usbTransportModes": [
+{
+"id": "adb_tunnel",
+"priority": 1,
+"targetHostFromPc": "127.0.0.1",
+"pcSetupCommands": [
+"adb forward tcp:<videoPort> tcp:<videoPort>",
+"adb forward tcp:<videoPort+1> tcp:<videoPort+1>"
+],
+"requirements": "Depuracion USB activada en Android + adb.exe en PC.",
+"notes": "No requiere activar Anclaje USB ni lidiar con firewall de red local."
+},
+{
+"id": "usb_tethering_rndis",
+"priority": 2,
+"interfacePrefixesOnAndroid": ["rndis", "usb", "ncm", "eth"],
+"targetHostFromPc": "Default Gateway IPv4 del adaptador RNDIS/USB en el PC (ejemplo tipico: 192.168.42.129)",
+"requirements": "Anclaje USB (USB Tethering) activado en Android; no requiere ADB en el PC.",
+"notes": "El PC inicia conexiones TCP salientes hacia el telefono para atravesar sin bloqueos el Firewall de Windows."
+},
+{
+"id": "wifi_lan_fallback",
+"priority": 3,
+"interfacePrefixesOnAndroid": ["wlan"],
+"targetHostFromPc": "IP Wi-Fi del telefono en la misma subred",
+"notes": "Disponible automaticamente porque los servidores escuchan en 0.0.0.0."
+}
+]
+},
+"discoveryAndControlProtocol": {
+"httpControlEndpoints": {
+"baseUrl": "http://<phoneIpOrLoopback>:<videoPort + 1>",
+"endpoints": [
+{
+"method": "GET",
+"path": "/status",
+"responseStatus": 200,
+"contentType": "application/json",
+"headers": {
+"Access-Control-Allow-Origin": "",
+"Cache-Control": "no-store",
+"Connection": "close"
+},
+"bodyExample": {
+"live": true,
+"port": 7878,
+"proto": "H264_TCP"
+},
+"protoEnumValues": ["H264_TCP", "HEVC_TCP", "MJPEG_HTTP"]
+},
+{
+"method": "GET",
+"path": "/use-mjpeg",
+"description": "Solicita al movil cambiar dinamicamente el pipeline activo a MJPEG_HTTP si el receptor de PC no soporta decodificacion H.264/HEVC.",
+"responseStatus": 200,
+"contentType": "application/json",
+"bodyExample": {
+"live": true,
+"port": 7878,
+"proto": "MJPEG_HTTP"
+},
+"pcWaitAfterCallMs": 350
+}
+]
+},
+"udpDiscoveryMessages": {
+"port": 7879,
+"encoding": "UTF-8",
+"pcToPhoneProbe": {
+"payload": "CAMLINK_WHO",
+"destination": "255.255.255.255:7879 (o broadcast de subred)",
+"expectedReply": "CAMLINK_LIVE|port=<videoPort>|proto=<PROTOCOL>|ip=<bestLocalIp>"
+},
+"phonePeriodicBeacon": {
+"intervalMs": 500,
+"livePayloadFormat": "CAMLINK_LIVE|port=<videoPort>|proto=<PROTOCOL>|ip=<localIp>",
+"stopPayloadFormat": "CAMLINK_STOP|port=<videoPort>|proto=<PROTOCOL>|ip=<localIp>"
+}
+}
+},
+"videoStreamingProtocols": {
+"H264_TCP": {
+"enumName": "H264_TCP",
+"defaultProtocol": true,
+"transport": "Raw TCP socket",
+"urlFormat": "tcp://<host>:<videoPort>",
+"mimeType": "video/avc",
+"wireFormat": "Raw H.264 Annex-B byte stream (NAL units con start codes 0x00000001 emitidos por MediaCodec sin contenedor MP4/TS ni cabecera personalizada de longitud)",
+"syncAndLateJoinBehavior": [
+"El servidor almacena el ultimo BUFFER_FLAG_CODEC_CONFIG (SPS/PPS) y lo envia inmediatamente al conectarse cada nuevo cliente PC.",
+"Al conectarse un nuevo cliente, el servidor solicita un Keyframe IDR inmediato al MediaCodec (PARAMETER_KEY_REQUEST_SYNC_FRAME).",
+"Socket configurado con TCP_NODELAY=true, SO_SNDBUF=65536, IPTOS_LOWDELAY=0x10.",
+"Cola por cliente: Channel(capacity=3, onBufferOverflow=DROP_OLDEST) para descartar frames atrasados y no acumular latencia."
+],
+"pcRecommendedCommands": {
+"ffplay": "ffplay -fflags nobuffer -flags low_delay -framedrop -probesize 32 -analyzeduration 0 -f h264 tcp://<host>:<videoPort>",
+"ffmpegRawPipe": "ffmpeg -fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 -f h264 -i tcp://<host>:<videoPort> -f rawvideo -pix_fmt bgr24 pipe:1",
+"vlc": "vlc --demux=h264 --network-caching=0 tcp://<host>:<videoPort>",
+"openCvPython": "cv2.VideoCapture('tcp://<host>:<videoPort>', cv2.CAP_FFMPEG)"
+}
+},
+"HEVC_TCP": {
+"enumName": "HEVC_TCP",
+"defaultProtocol": false,
+"availability": "Condicional: solo si MediaCodecList reporta encoder hardware video/hevc",
+"transport": "Raw TCP socket",
+"urlFormat": "tcp://<host>:<videoPort>",
+"mimeType": "video/hevc",
+"wireFormat": "Raw H.265/HEVC Annex-B byte stream (VPS/SPS/PPS en CODEC_CONFIG + frames IDR/P sin contenedor)",
+"syncAndLateJoinBehavior": "Identico a H264_TCP (reenvia CODEC_CONFIG cacheado + solicita IDR inmediato + Channel capacidad 3 DROP_OLDEST).",
+"pcRecommendedCommands": {
+"ffplay": "ffplay -fflags nobuffer -flags low_delay -framedrop -probesize 32 -analyzeduration 0 -f hevc tcp://<host>:<videoPort>",
+"ffmpegRawPipe": "ffmpeg -fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 -f hevc -i tcp://<host>:<videoPort> -f rawvideo -pix_fmt bgr24 pipe:1",
+"vlc": "vlc --demux=hevc --network-caching=0 tcp://<host>:<videoPort>"
+}
+},
+"MJPEG_HTTP": {
+"enumName": "MJPEG_HTTP",
+"defaultProtocol": false,
+"transport": "HTTP/1.1 sobre TCP",
+"urlFormat": "http://<host>:<videoPort>/video",
+"endpoints": {
+"/video": {
+"description": "Stream multipart JPEG continuo",
+"httpResponseHeaders": {
+"HTTP": "HTTP/1.1 200 OK",
+"Content-Type": "multipart/x-mixed-replace; boundary=camlinkframe",
+"Cache-Control": "no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0",
+"Pragma": "no-cache",
+"Expires": "-1",
+"Access-Control-Allow-Origin": "",
+"Connection": "close"
+},
+"partFormat": "--camlinkframe\r\nContent-Type: image/jpeg\r\nContent-Length: <byte_length>\r\n\r\n<raw_jpeg_bytes>\r\n",
+"bufferPolicy": "Channel(capacity=1, onBufferOverflow=DROP_OLDEST) para entregar siempre el frame mas reciente.",
+"encodingPipeline": "Camera2 ImageFormat.YUV_420_888 (maxImages=2) -> NV21 -> YuvImage.compressToJpeg(jpegQuality)"
+},
+"/monitor": {
+"description": "Pagina HTML5 embebida con <img src='/video'> y auto-reconexion JS cada 600 ms.",
+"contentType": "text/html; charset=utf-8"
+}
+},
+"pcRecommendedCommands": {
+"ffplay": "ffplay -fflags nobuffer -flags low_delay -framedrop -f mpjpeg http://<host>:<videoPort>/video",
+"vlc": "vlc --network-caching=0 http://<host>:<videoPort>/video",
+"openCvPython": "cv2.VideoCapture('http://<host>:<videoPort>/video')"
+}
+}
+},
+"cameraAndEncoderParameters": {
+"resolutions": [
+{ "enum": "FHD_1080P", "width": 1920, "height": 1080, "default": false },
+{ "enum": "HD_720P", "width": 1280, "height": 720, "default": true },
+{ "enum": "SD_480P", "width": 854, "height": 480, "default": false },
+{ "enum": "LOW_360P", "width": 640, "height": 360, "default": false }
+],
+"fallbackResolutionOnSessionFail": "640x480 (VGA) o tamano soportado mas cercano",
+"fpsOptions": [60, 30, 24],
+"defaultFps": 60,
+"bitrateMbps": {
+"min": 2,
+"max": 25,
+"default": 8,
+"mode": "BITRATE_MODE_CBR"
+},
+"jpegQuality": {
+"min": 50,
+"max": 95,
+"default": 82
+},
+"keyframeIntervalSec": {
+"uiPresets": [0.5, 1.0, 2.0],
+"default": 1.0,
+"mediaCodecMinSeconds": 1
+},
+"lenses": ["BACK", "FRONT"],
+"defaultLens": "BACK",
+"lowLatencyHardwareFlags": {
+"enabledByDefault": true,
+"colorFormat": "COLOR_FormatSurface",
+"keyBitrateMode": "BITRATE_MODE_CBR",
+"keyPriority": 0,
+"keyLatencyApi26": 0,
+"keyMaxBFramesApi29": 0,
+"keyLowLatencyApi30": 1,
+"automaticBaselineFallback": true
+},
+"camera2Features": {
+"stabilizationDefault": false,
+"tapToFocusAndMetering": true,
+"exposureCompensationRange": "Sensor AE range",
+"pinchZoom": "CONTROL_ZOOM_RATIO (API 30+) o SCALER_CROP_REGION (API < 30)",
+"torchControl": true,
+"autoStreamOnUsbDefault": false,
+"frameOrientationBehavior": "El encoder hardware recibe los frames en orientacion nativa del sensor (tipicamente horizontal 1280x720) sin rotacion en CPU para minimizar latencia. El cliente PC debe ofrecer opcion de rotacion (0/90/180/270 grados) y espejo si el usuario coloca el movil en vertical."
+}
+},
+"pcReceiverImplementationGuide": {
+"recommendedConnectionLoop": [
+"1. Verificar si adb.exe esta disponible; si existe, ejecutar 'adb forward tcp:<videoPort> tcp:<videoPort>' y 'adb forward tcp:<ctrlPort> tcp:<ctrlPort>' y probar GET http://127.0.0.1:<ctrlPort>/status.",
+"2. En paralelo o como respaldo sin ADB, enumerar interfaces de red activas y sus IPv4 Default Gateways (para detectar USB Tethering/RNDIS) y probar GET http://<gatewayIp>:<ctrlPort>/status con timeout ~350-500 ms.",
+"3. Como tercer mecanismo, enviar paquete UDP 'CAMLINK_WHO' a 255.255.255.255:7879 y esperar respuesta 'CAMLINK_LIVE|port=...|proto=...|ip=...'.",
+"4. Al obtener {'live': true, 'port': P, 'proto': PROTO}, conectar el decodificador correspondiente a <host>:P segun PROTO.",
+"5. Si el receptor PC solo soporta MJPEG o carece de decodificador H.264/HEVC, llamar GET http://<host>:<ctrlPort>/use-mjpeg, esperar ~350 ms y abrir http://<host>:P/video.",
+"6. Si el flujo TCP/HTTP se corta (p. ej. el usuario cambio de resolucion, FPS o camara en la APK, lo cual reinicia el pipeline), reintentar la conexion automaticamente con backoff corto (250-500 ms)."
+],
+"criticalLatencyRulesForPcAgent": [
+"Nunca acumular buffer de entrada: configurar nobuffer / low_delay / buffer size minimo.",
+"En H264_TCP/HEVC_TCP no esperar por un contenedor MP4/MKV: el socket entrega Annex-B puro directamente.",
+"Manejar reconexion limpia cuando la APK reinicia encoder por cambio de lente o resolucion."
+]
+}
+}
+tengo la apk la cual sera la que enviara la imagen de el movil al pc via usb y le pedi un .json explicando el proyecto , ANALIZALO CREA UN PLAN Y UN ARCHIVO JSON QUE LE ENVIARE AL OTRO PROYECTO PARA QUE SE AJUSTE A TI Y FUNCIONEN EN CONJUNTO , QUIERO QUE PLANIFIQUES LOS CAMBIOS QUE HARAS PARA TI Y PARA EL OTRO PROYECTO SE MUY DETALLADOtengo la apk la cual sera la que enviara la imagen de el movil al pc via usb y le pedi un .json explicando el proyecto , ANALIZALO CREA UN PLAN Y UN ARCHIVO JSON QUE LE ENVIARE AL OTRO PROYECTO PARA QUE SE AJUSTE A TI Y FUNCIONEN EN CONJUNTO , QUIERO QUE PLANIFIQUES LOS CAMBIOS QUE HARAS PARA TI Y PARA EL OTRO PROYECTO SE MUY DETALLADO{
+"schemaVersion": "1.0.0",
+"generatedAt": "2026-11-20",
+"project": {
+"name": "CamLink USB",
+"role": "mobile_camera_transmitter",
+"description": "Aplicacion Android (Kotlin + Jetpack Compose) que captura video en tiempo real con Camera2/MediaCodec y lo transmite hacia una PC por USB (ADB loopback o USB Tethering RNDIS) con latencia ultrabaja.",
+"applicationId": "com.aistudio.camlinkusb.vkrqmn",
+"namespace": "com.example",
+"androidSdk": {
+"minSdk": 24,
+"targetSdk": 36,
+"compileSdk": 36,
+"javaCompatibility": "VERSION_11"
+},
+"buildToolchain": {
+"agp": "9.1.1",
+"kotlin": "2.4.21",
+"composeBom": "2024.09.00",
+"buildSystem": "Gradle Kotlin DSL"
+}
+},
+"pcCompanionRole": {
+"targetRole": "pc_usb_video_receiver_and_input_source",
+"summary": "El proyecto de PC debe descubrir el telefono conectado por USB (via ADB forward o puerta de enlace RNDIS / UDP), consultar su estado HTTP, seleccionar o solicitar el protocolo adecuado y decodificar en tiempo real el flujo de video entrante para mostrarlo o exponerlo como entrada de camara/video.",
+"audioSupport": false,
+"audioNote": "Actualmente la APK transmite exclusivamente video (sin pista de audio)."
+},
+"dependenciesAndStack": {
+"mobileLibraries": [
+"androidx.camera:camera-camera2:1.5.0",
+"androidx.camera:camera-core:1.5.0",
+"androidx.camera:camera-lifecycle:1.5.0",
+"androidx.camera:camera-view:1.5.0",
+"androidx.datastore:datastore-preferences:1.1.7",
+"androidx.navigation:navigation-compose:2.8.9",
+"androidx.compose.material3",
+"androidx.compose.material-icons-extended",
+"org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2",
+"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2"
+],
+"androidSystemApis": [
+"android.hardware.camera2 (CameraManager, CameraDevice, CameraCaptureSession, CaptureRequest)",
+"android.media.MediaCodec (H.264/AVC & H.265/HEVC hardware encoder with COLOR_FormatSurface)",
+"android.media.ImageReader + android.graphics.YuvImage (YUV_420_888 -> NV21 -> JPEG para MJPEG)",
+"java.net.ServerSocket / Socket / DatagramSocket",
+"android.hardware.usb.action.USB_STATE",
+"ForegroundService (foregroundServiceType=camera) + PARTIAL_WAKE_LOCK"
+],
+"androidPermissions": [
+"android.permission.CAMERA",
+"android.permission.INTERNET",
+"android.permission.ACCESS_NETWORK_STATE",
+"android.permission.ACCESS_WIFI_STATE",
+"android.permission.FOREGROUND_SERVICE",
+"android.permission.FOREGROUND_SERVICE_CAMERA",
+"android.permission.POST_NOTIFICATIONS",
+"android.permission.WAKE_LOCK"
+],
+"pcRecommendedToolsAndLibraries": {
+"usbDriversAndCli": {
+"adb": "Google Android Platform Tools (opcional si el usuario usa USB Tethering RNDIS; winget install Google.PlatformTools)",
+"usbTethering": "Controlador RNDIS/NCM nativo de Windows/Linux/macOS (sin instalar ADB)"
+},
+"videoDecoders": [
+{
+"name": "FFmpeg / libavcodec / PyAV / ffplay",
+"useCase": "Decodificacion hardware/software de latencia ultrabaja para H264_TCP, HEVC_TCP y MJPEG_HTTP",
+"windowsInstall": "winget install Gyan.FFmpeg"
+},
+{
+"name": "OpenCV (cv2.VideoCapture con backend CAP_FFMPEG)",
+"useCase": "Ingesta directa de frames numpy/Mat para vision por computadora o camara virtual"
+},
+{
+"name": "GStreamer (tcpclientsrc + h264parse + decodebin / souphttpsrc + jpegdec)",
+"useCase": "Pipelines multimedia de muy baja latencia en C++/Rust/Python"
+},
+{
+"name": "VLC / libVLC",
+"useCase": "Reproduccion o embedding con --demux=h264 --network-caching=0"
+},
+{
+"name": "HTTP Client + JPEG Decoder nativo",
+"useCase": "Consumir MJPEG_HTTP sin dependencias pesadas de codecs H.264/HEVC"
+}
+],
+"virtualWebcamOutputOptions": [
+"Windows: OBS Virtual Camera / UnityCapture / DirectShow Filter / pyvirtualcam",
+"Linux: v4l2loopback + ffmpeg -f h264 -i tcp://... -f v4l2 /dev/videoX",
+"macOS: CoreMediaIO Camera Extension / OBS Virtual Camera"
+]
+}
+},
+"architectureFiles": {
+"appEntry": "app/src/main/java/com/example/CamLinkApp.kt",
+"mainActivity": "app/src/main/java/com/example/MainActivity.kt",
+"settingsStore": "app/src/main/java/com/example/data/StreamSettings.kt",
+"cameraInspection": "app/src/main/java/com/example/stream/CameraCapabilities.kt",
+"streamEngine": "app/src/main/java/com/example/stream/StreamEngine.kt",
+"socketServer": "app/src/main/java/com/example/stream/SocketStreamServer.kt",
+"discoveryAndControl": "app/src/main/java/com/example/stream/UdpDiscoveryBeacon.kt",
+"usbMonitor": "app/src/main/java/com/example/stream/UsbDiagnosticsMonitor.kt",
+"foregroundService": "app/src/main/java/com/example/service/CameraStreamService.kt",
+"pcAutoLauncherTemplate": "app/src/main/res/raw/camlink_autopc.bat",
+"pcAutoLauncherHelper": "app/src/main/java/com/example/stream/PcAutoLauncherScript.kt",
+"uiViewModel": "app/src/main/java/com/example/ui/viewmodel/StreamViewModel.kt",
+"uiScreens": [
+"app/src/main/java/com/example/ui/screens/StreamScreen.kt",
+"app/src/main/java/com/example/ui/screens/PcSetupScreen.kt",
+"app/src/main/java/com/example/ui/screens/SettingsScreen.kt"
+]
+},
+"networkContract": {
+"bindAddress": "0.0.0.0",
+"ports": {
+"videoPort": {
+"default": 7878,
+"validRange": [1024, 65535],
+"protocol": "TCP",
+"description": "Socket principal de salida de video (H264 raw TCP, HEVC raw TCP o HTTP MJPEG segun configuracion)."
+},
+"controlHttpPort": {
+"formula": "videoPort + 1",
+"default": 7879,
+"protocol": "TCP (HTTP/1.1)",
+"description": "Servidor HTTP ligero de estado y cambio dinamico de protocolo. Activo solo mientras el stream esta transmitiendo."
+},
+"discoveryUdpPort": {
+"fixedPort": 7879,
+"protocol": "UDP",
+"description": "Puerto fijo para beacons periodicos y consultas CAMLINK_WHO."
+}
+},
+"usbTransportModes": [
+{
+"id": "adb_tunnel",
+"priority": 1,
+"targetHostFromPc": "127.0.0.1",
+"pcSetupCommands": [
+"adb forward tcp:<videoPort> tcp:<videoPort>",
+"adb forward tcp:<videoPort+1> tcp:<videoPort+1>"
+],
+"requirements": "Depuracion USB activada en Android + adb.exe en PC.",
+"notes": "No requiere activar Anclaje USB ni lidiar con firewall de red local."
+},
+{
+"id": "usb_tethering_rndis",
+"priority": 2,
+"interfacePrefixesOnAndroid": ["rndis", "usb", "ncm", "eth"],
+"targetHostFromPc": "Default Gateway IPv4 del adaptador RNDIS/USB en el PC (ejemplo tipico: 192.168.42.129)",
+"requirements": "Anclaje USB (USB Tethering) activado en Android; no requiere ADB en el PC.",
+"notes": "El PC inicia conexiones TCP salientes hacia el telefono para atravesar sin bloqueos el Firewall de Windows."
+},
+{
+"id": "wifi_lan_fallback",
+"priority": 3,
+"interfacePrefixesOnAndroid": ["wlan"],
+"targetHostFromPc": "IP Wi-Fi del telefono en la misma subred",
+"notes": "Disponible automaticamente porque los servidores escuchan en 0.0.0.0."
+}
+]
+},
+"discoveryAndControlProtocol": {
+"httpControlEndpoints": {
+"baseUrl": "http://<phoneIpOrLoopback>:<videoPort + 1>",
+"endpoints": [
+{
+"method": "GET",
+"path": "/status",
+"responseStatus": 200,
+"contentType": "application/json",
+"headers": {
+"Access-Control-Allow-Origin": "",
+"Cache-Control": "no-store",
+"Connection": "close"
+},
+"bodyExample": {
+"live": true,
+"port": 7878,
+"proto": "H264_TCP"
+},
+"protoEnumValues": ["H264_TCP", "HEVC_TCP", "MJPEG_HTTP"]
+},
+{
+"method": "GET",
+"path": "/use-mjpeg",
+"description": "Solicita al movil cambiar dinamicamente el pipeline activo a MJPEG_HTTP si el receptor de PC no soporta decodificacion H.264/HEVC.",
+"responseStatus": 200,
+"contentType": "application/json",
+"bodyExample": {
+"live": true,
+"port": 7878,
+"proto": "MJPEG_HTTP"
+},
+"pcWaitAfterCallMs": 350
+}
+]
+},
+"udpDiscoveryMessages": {
+"port": 7879,
+"encoding": "UTF-8",
+"pcToPhoneProbe": {
+"payload": "CAMLINK_WHO",
+"destination": "255.255.255.255:7879 (o broadcast de subred)",
+"expectedReply": "CAMLINK_LIVE|port=<videoPort>|proto=<PROTOCOL>|ip=<bestLocalIp>"
+},
+"phonePeriodicBeacon": {
+"intervalMs": 500,
+"livePayloadFormat": "CAMLINK_LIVE|port=<videoPort>|proto=<PROTOCOL>|ip=<localIp>",
+"stopPayloadFormat": "CAMLINK_STOP|port=<videoPort>|proto=<PROTOCOL>|ip=<localIp>"
+}
+}
+},
+"videoStreamingProtocols": {
+"H264_TCP": {
+"enumName": "H264_TCP",
+"defaultProtocol": true,
+"transport": "Raw TCP socket",
+"urlFormat": "tcp://<host>:<videoPort>",
+"mimeType": "video/avc",
+"wireFormat": "Raw H.264 Annex-B byte stream (NAL units con start codes 0x00000001 emitidos por MediaCodec sin contenedor MP4/TS ni cabecera personalizada de longitud)",
+"syncAndLateJoinBehavior": [
+"El servidor almacena el ultimo BUFFER_FLAG_CODEC_CONFIG (SPS/PPS) y lo envia inmediatamente al conectarse cada nuevo cliente PC.",
+"Al conectarse un nuevo cliente, el servidor solicita un Keyframe IDR inmediato al MediaCodec (PARAMETER_KEY_REQUEST_SYNC_FRAME).",
+"Socket configurado con TCP_NODELAY=true, SO_SNDBUF=65536, IPTOS_LOWDELAY=0x10.",
+"Cola por cliente: Channel(capacity=3, onBufferOverflow=DROP_OLDEST) para descartar frames atrasados y no acumular latencia."
+],
+"pcRecommendedCommands": {
+"ffplay": "ffplay -fflags nobuffer -flags low_delay -framedrop -probesize 32 -analyzeduration 0 -f h264 tcp://<host>:<videoPort>",
+"ffmpegRawPipe": "ffmpeg -fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 -f h264 -i tcp://<host>:<videoPort> -f rawvideo -pix_fmt bgr24 pipe:1",
+"vlc": "vlc --demux=h264 --network-caching=0 tcp://<host>:<videoPort>",
+"openCvPython": "cv2.VideoCapture('tcp://<host>:<videoPort>', cv2.CAP_FFMPEG)"
+}
+},
+"HEVC_TCP": {
+"enumName": "HEVC_TCP",
+"defaultProtocol": false,
+"availability": "Condicional: solo si MediaCodecList reporta encoder hardware video/hevc",
+"transport": "Raw TCP socket",
+"urlFormat": "tcp://<host>:<videoPort>",
+"mimeType": "video/hevc",
+"wireFormat": "Raw H.265/HEVC Annex-B byte stream (VPS/SPS/PPS en CODEC_CONFIG + frames IDR/P sin contenedor)",
+"syncAndLateJoinBehavior": "Identico a H264_TCP (reenvia CODEC_CONFIG cacheado + solicita IDR inmediato + Channel capacidad 3 DROP_OLDEST).",
+"pcRecommendedCommands": {
+"ffplay": "ffplay -fflags nobuffer -flags low_delay -framedrop -probesize 32 -analyzeduration 0 -f hevc tcp://<host>:<videoPort>",
+"ffmpegRawPipe": "ffmpeg -fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 -f hevc -i tcp://<host>:<videoPort> -f rawvideo -pix_fmt bgr24 pipe:1",
+"vlc": "vlc --demux=hevc --network-caching=0 tcp://<host>:<videoPort>"
+}
+},
+"MJPEG_HTTP": {
+"enumName": "MJPEG_HTTP",
+"defaultProtocol": false,
+"transport": "HTTP/1.1 sobre TCP",
+"urlFormat": "http://<host>:<videoPort>/video",
+"endpoints": {
+"/video": {
+"description": "Stream multipart JPEG continuo",
+"httpResponseHeaders": {
+"HTTP": "HTTP/1.1 200 OK",
+"Content-Type": "multipart/x-mixed-replace; boundary=camlinkframe",
+"Cache-Control": "no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0",
+"Pragma": "no-cache",
+"Expires": "-1",
+"Access-Control-Allow-Origin": "",
+"Connection": "close"
+},
+"partFormat": "--camlinkframe\r\nContent-Type: image/jpeg\r\nContent-Length: <byte_length>\r\n\r\n<raw_jpeg_bytes>\r\n",
+"bufferPolicy": "Channel(capacity=1, onBufferOverflow=DROP_OLDEST) para entregar siempre el frame mas reciente.",
+"encodingPipeline": "Camera2 ImageFormat.YUV_420_888 (maxImages=2) -> NV21 -> YuvImage.compressToJpeg(jpegQuality)"
+},
+"/monitor": {
+"description": "Pagina HTML5 embebida con <img src='/video'> y auto-reconexion JS cada 600 ms.",
+"contentType": "text/html; charset=utf-8"
+}
+},
+"pcRecommendedCommands": {
+"ffplay": "ffplay -fflags nobuffer -flags low_delay -framedrop -f mpjpeg http://<host>:<videoPort>/video",
+"vlc": "vlc --network-caching=0 http://<host>:<videoPort>/video",
+"openCvPython": "cv2.VideoCapture('http://<host>:<videoPort>/video')"
+}
+}
+},
+"cameraAndEncoderParameters": {
+"resolutions": [
+{ "enum": "FHD_1080P", "width": 1920, "height": 1080, "default": false },
+{ "enum": "HD_720P", "width": 1280, "height": 720, "default": true },
+{ "enum": "SD_480P", "width": 854, "height": 480, "default": false },
+{ "enum": "LOW_360P", "width": 640, "height": 360, "default": false }
+],
+"fallbackResolutionOnSessionFail": "640x480 (VGA) o tamano soportado mas cercano",
+"fpsOptions": [60, 30, 24],
+"defaultFps": 60,
+"bitrateMbps": {
+"min": 2,
+"max": 25,
+"default": 8,
+"mode": "BITRATE_MODE_CBR"
+},
+"jpegQuality": {
+"min": 50,
+"max": 95,
+"default": 82
+},
+"keyframeIntervalSec": {
+"uiPresets": [0.5, 1.0, 2.0],
+"default": 1.0,
+"mediaCodecMinSeconds": 1
+},
+"lenses": ["BACK", "FRONT"],
+"defaultLens": "BACK",
+"lowLatencyHardwareFlags": {
+"enabledByDefault": true,
+"colorFormat": "COLOR_FormatSurface",
+"keyBitrateMode": "BITRATE_MODE_CBR",
+"keyPriority": 0,
+"keyLatencyApi26": 0,
+"keyMaxBFramesApi29": 0,
+"keyLowLatencyApi30": 1,
+"automaticBaselineFallback": true
+},
+"camera2Features": {
+"stabilizationDefault": false,
+"tapToFocusAndMetering": true,
+"exposureCompensationRange": "Sensor AE range",
+"pinchZoom": "CONTROL_ZOOM_RATIO (API 30+) o SCALER_CROP_REGION (API < 30)",
+"torchControl": true,
+"autoStreamOnUsbDefault": false,
+"frameOrientationBehavior": "El encoder hardware recibe los frames en orientacion nativa del sensor (tipicamente horizontal 1280x720) sin rotacion en CPU para minimizar latencia. El cliente PC debe ofrecer opcion de rotacion (0/90/180/270 grados) y espejo si el usuario coloca el movil en vertical."
+}
+},
+"pcReceiverImplementationGuide": {
+"recommendedConnectionLoop": [
+"1. Verificar si adb.exe esta disponible; si existe, ejecutar 'adb forward tcp:<videoPort> tcp:<videoPort>' y 'adb forward tcp:<ctrlPort> tcp:<ctrlPort>' y probar GET http://127.0.0.1:<ctrlPort>/status.",
+"2. En paralelo o como respaldo sin ADB, enumerar interfaces de red activas y sus IPv4 Default Gateways (para detectar USB Tethering/RNDIS) y probar GET http://<gatewayIp>:<ctrlPort>/status con timeout ~350-500 ms.",
+"3. Como tercer mecanismo, enviar paquete UDP 'CAMLINK_WHO' a 255.255.255.255:7879 y esperar respuesta 'CAMLINK_LIVE|port=...|proto=...|ip=...'.",
+"4. Al obtener {'live': true, 'port': P, 'proto': PROTO}, conectar el decodificador correspondiente a <host>:P segun PROTO.",
+"5. Si el receptor PC solo soporta MJPEG o carece de decodificador H.264/HEVC, llamar GET http://<host>:<ctrlPort>/use-mjpeg, esperar ~350 ms y abrir http://<host>:P/video.",
+"6. Si el flujo TCP/HTTP se corta (p. ej. el usuario cambio de resolucion, FPS o camara en la APK, lo cual reinicia el pipeline), reintentar la conexion automaticamente con backoff corto (250-500 ms)."
+],
+"criticalLatencyRulesForPcAgent": [
+"Nunca acumular buffer de entrada: configurar nobuffer / low_delay / buffer size minimo.",
+"En H264_TCP/HEVC_TCP no esperar por un contenedor MP4/MKV: el socket entrega Annex-B puro directamente.",
+"Manejar reconexion limpia cuando la APK reinicia encoder por cambio de lente o resolucion."
+]
+}
+}
+tengo la apk la cual sera la que enviara la imagen de el movil al pc via usb y le pedi un .json explicando el proyecto , ANALIZALO CREA UN PLAN Y UN ARCHIVO JSON QUE LE ENVIARE AL OTRO PROYECTO PARA QUE SE AJUSTE A TI Y FUNCIONEN EN CONJUNTO , QUIERO QUE PLANIFIQUES LOS CAMBIOS QUE HARAS PARA TI Y PARA EL OTRO PROYECTO SE MUY DETALLADOtengo la apk la cual sera la que enviara la imagen de el movil al pc via usb y le pedi un .json explicando el proyecto , ANALIZALO CREA UN PLAN Y UN ARCHIVO JSON QUE LE ENVIARE AL OTRO PROYECTO PARA QUE SE AJUSTE A TI Y FUNCIONEN EN CONJUNTO , QUIERO QUE PLANIFIQUES LOS CAMBIOS QUE HARAS PARA TI Y PARA EL OTRO PROYECTO SE MUY DETALLADO

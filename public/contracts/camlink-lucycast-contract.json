@@ -1,0 +1,116 @@
+{
+  "schemaVersion": "1.2.0",
+  "generatedAt": "2026-11-23",
+  "senderProject": {
+    "name": "PANDAFACE",
+    "role": "pc_usb_video_receiver_and_ai_processor",
+    "description": "Aplicacion PC (Node.js/Express + React) que detecta automaticamente CamLink USB por WebUSB + RNDIS/Tethering + ADB + UDP, decodifica H.264/HEVC via FFmpeg o MJPEG_HTTP directo, rota/normaliza a 16:9 en GPU y procesa video en tiempo real en PANDAFACE.",
+    "localOriginUrl": "http://localhost:3000",
+    "companionBatPath": "public/scripts/connect.bat"
+  },
+  "targetProject": {
+    "name": "CamLink USB",
+    "applicationId": "com.aistudio.camlinkusb.vkrqmn",
+    "role": "mobile_camera_transmitter"
+  },
+  "autoBindingProtocol": {
+    "goal": "Vinculacion automatica cero-configuracion entre CamLink USB (Android) y PANDAFACE (PC) al conectar el cable USB (Opcion A Anclaje USB sin ADB u Opcion B ADB).",
+    "stepByStepHandshake": [
+      "1. En Android (CamLink USB), al pulsar Transmitir (o al activarse USB_STATE / RNDIS), enumerar NetworkInterface activas dando prioridad a nombres que contengan rndis, usb, ncm o tether.",
+      "2. Abrir inmediatamente SocketStreamServer en 0.0.0.0:7878 (video) y HttpControlServer + UdpDiscoveryBeacon en 0.0.0.0:7879 (control HTTP + UDP discovery).",
+      "3. Responder al datagrama UDP 'CAMLINK_WHO' en puerto 7879 y emitir un anuncio periodico cada 1500 ms hacia la direccion broadcast de la subred USB/RNDIS con formato: CAMLINK_LIVE|ip=<usbIp>|port=7878|proto=<H264_TCP|HEVC_TCP|MJPEG_HTTP>|lens=<BACK|FRONT>|w=<width>|h=<height>|fps=<fps>.",
+      "4. En PC (PANDAFACE), UsbDeviceDetector lee navigator.usb.getDevices(), /api/usb-cam/discover (OS Default Gateway + ADB forward tcp:7878/7879 + UDP 7879) y verifica GET http://<host>:7879/status.",
+      "5. Si /status responde live=true, PANDAFACE se conecta automaticamente sin que el usuario escriba IPs: usa FFmpeg tcp://<host>:7878 si FFmpeg existe en el PC y proto es H264_TCP/HEVC_TCP; si no, llama GET http://<host>:7879/use-mjpeg y lee http://<host>:7878/video."
+    ],
+    "adbFallback": {
+      "commandsExecutedByPcAndBat": [
+        "adb forward tcp:7878 tcp:7878",
+        "adb forward tcp:7879 tcp:7879"
+      ],
+      "pcTargetHost": "127.0.0.1"
+    }
+  },
+  "exactAgentInstructionsForApk": [
+    {
+      "id": "KEEP_CONTROL_SERVER_ALIVE",
+      "fileHint": "UdpDiscoveryBeacon.kt / HttpControlServer",
+      "rule": "NO detener ni recrear el ServerSocket HTTP de control (puerto videoPort + 1 = 7879) dentro de StreamEngine.restartPipelineInternal(). Solo Camera2, MediaCodec y la sesion de video se reinician; el puerto 7879 debe seguir respondiendo /status con restarting=true durante los 300-600 ms de reinicio."
+    },
+    {
+      "id": "FIX_CORS_AND_OPTIONS",
+      "fileHint": "UdpDiscoveryBeacon.kt",
+      "rule": "Incluir siempre 'Access-Control-Allow-Origin: *', 'Access-Control-Allow-Methods: GET, POST, OPTIONS', 'Cache-Control: no-store' y responder HTTP 204 a solicitudes OPTIONS en el servidor HTTP 7879."
+    },
+    {
+      "id": "IMPLEMENT_REMOTE_CONTROL_ENDPOINTS",
+      "fileHint": "UdpDiscoveryBeacon.kt + StreamEngine.kt + StreamViewModel.kt",
+      "rule": "Exponer y cablear en el servidor HTTP 7879 los endpoints: GET /status, GET /use-mjpeg, GET /protocol?value=H264_TCP|HEVC_TCP|MJPEG_HTTP, GET /flip (opcional ?lens=BACK|FRONT), GET /torch?state=toggle|on|off, GET /resolution?value=FHD_1080P|HD_720P|SD_480P|LOW_360P, GET /fps?value=60|30|24 y GET /keyframe."
+    },
+    {
+      "id": "KEEP_NATIVE_SENSOR_ORIENTATION",
+      "fileHint": "StreamEngine.kt / CameraCapture",
+      "rule": "Transmitir los frames en orientacion nativa del sensor sin rotacion por CPU para mantener latencia minima; reportar 'sensorOrientation' (0|90|180|270), 'width' y 'height' en /status. PANDAFACE PC rota (0/90/180/270) y recorta 16:9 en GPU."
+    },
+    {
+      "id": "ENSURE_LOW_LATENCY_ENCODER_HEADERS",
+      "fileHint": "SocketStreamServer.kt / StreamEngine.kt",
+      "rule": "Para H264_TCP/HEVC_TCP enviar SPS/PPS (y VPS en HEVC) cacheados + Keyframe IDR inmediato al aceptar cada cliente TCP, con TCP_NODELAY=true. Para MJPEG_HTTP usar HTTP/1.1 multipart/x-mixed-replace; boundary=camlinkframe con Content-Length exacto por cada frame JPEG."
+    },
+    {
+      "id": "AUTO_START_ON_USB_READY_OPTION",
+      "fileHint": "AndroidManifest.xml / UsbDiagnosticsMonitor.kt / CameraStreamService.kt",
+      "rule": "Detectar USB_STATE (connected=true, rndis/ncm/adb) en UsbDiagnosticsMonitor y mostrar estado 'Listo para PANDAFACE' con la IP RNDIS exacta en pantalla; opcionalmente permitir 'Auto-transmitir al conectar USB' si el permiso CAMERA ya fue concedido."
+    },
+    {
+      "id": "STANDBY_DISCOVERY_ALWAYS_ON",
+      "fileHint": "CamLinkApp.kt / MainActivity.kt / UdpDiscoveryBeacon.kt",
+      "rule": "Iniciar el servidor HTTP de control (:7879) y el respondedor UDP 'CAMLINK_WHO' (:7879) al abrir la app o al detectar USB (sin esperar a pulsar Transmitir). Antes de transmitir debe responder CAMLINK_READY|port=7878|proto=...|ip=<usbIp>|device=<modelo> por UDP y {live:false, port:7878, proto:'...', usbIps:['...'], device:'...'} en GET /status."
+    },
+    {
+      "id": "ALIGN_APPHOY_WITH_PANDAFACE",
+      "fileHint": "PcAutoLauncherScript.kt / camlink_autopc.bat",
+      "rule": "Antes de abrir ffplay/VLC/Edge en apphoy.bat, verificar si http://localhost:3000/api/health responde. Si PANDAFACE esta activo localmente, registrar el dispositivo en POST http://localhost:3000/api/usb-cam/register y abrir http://localhost:3000/?source=usb sin robar la conexion TCP 7878 con ffplay."
+    }
+  ],
+  "httpControlApiSpec": {
+    "baseUrl": "http://<usbIp_or_127.0.0.1>:7879",
+    "requiredHeaders": {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Cache-Control": "no-store",
+      "Connection": "close"
+    },
+    "statusJsonSchema": {
+      "live": true,
+      "restarting": false,
+      "port": 7878,
+      "proto": "H264_TCP",
+      "lens": "BACK",
+      "resolution": "HD_720P",
+      "width": 1280,
+      "height": 720,
+      "fps": 60,
+      "sensorOrientation": 90,
+      "torch": false,
+      "flashSupported": true,
+      "connectedClients": 1,
+      "usbIps": ["192.168.42.129"]
+    },
+    "endpoints": [
+      { "method": "GET", "path": "/status", "returns": "statusJsonSchema" },
+      { "method": "GET", "path": "/use-mjpeg", "returns": { "ok": true, "proto": "MJPEG_HTTP", "port": 7878 } },
+      { "method": "GET", "path": "/protocol?value=H264_TCP|HEVC_TCP|MJPEG_HTTP", "returns": { "ok": true, "proto": "H264_TCP" } },
+      { "method": "GET", "path": "/flip", "optionalQuery": "?lens=BACK|FRONT", "returns": { "ok": true, "lens": "FRONT" } },
+      { "method": "GET", "path": "/torch?state=toggle|on|off", "returns": { "ok": true, "torch": true } },
+      { "method": "GET", "path": "/resolution?value=FHD_1080P|HD_720P|SD_480P|LOW_360P", "returns": { "ok": true, "resolution": "HD_720P", "width": 1280, "height": 720 } },
+      { "method": "GET", "path": "/fps?value=60|30|24", "returns": { "ok": true, "fps": 60 } },
+      { "method": "GET", "path": "/keyframe", "returns": { "ok": true } }
+    ]
+  },
+  "videoPipelinesSupportedByPc": {
+    "H264_TCP": "tcp://<host>:7878 -> FFmpeg (-fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 -f h264) -> PANDAFACE Canvas",
+    "HEVC_TCP": "tcp://<host>:7878 -> FFmpeg (-f hevc) -> PANDAFACE Canvas",
+    "MJPEG_HTTP": "http://<host>:7878/video -> Proxy HTTP directo -> createImageBitmap Canvas (respaldo automatico si PC no tiene FFmpeg)"
+  }
+}

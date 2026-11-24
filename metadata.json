@@ -1,0 +1,6 @@
+{
+  "name": "LucyCast Studio",
+  "description": "Transmisión de cámara móvil a PC con latencia ultrabaja por WebRTC y cambio de rostro en tiempo real con Decart AI Lucy 2.5 y Lucy 2.1.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
