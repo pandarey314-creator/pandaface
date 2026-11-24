@@ -1,6 +1,17 @@
-export type LucyModelId = "lucy-2.5" | "lucy-2.1" | "lucy-2.6" | "lucy-latest";
+export type LucyModelCategory = "edit" | "restyle" | "vton";
 
-export type VideoSourceMode = "mobile" | "usb" | "webcam";
+export type LucyModelId =
+  | "lucy-2.6"
+  | "lucy-2.5"
+  | "lucy-2.1"
+  | "lucy-latest"
+  | "lucy-restyle-2"
+  | "lucy-restyle-latest"
+  | "lucy-vton-3.6"
+  | "lucy-vton-3.5"
+  | "lucy-vton-latest";
+
+export type VideoSourceMode = "mobile" | "usb" | "webcam" | "window";
 export type ViewLayoutMode = "output" | "split" | "pip";
 
 export type UsbCamPhase =
@@ -33,6 +44,17 @@ export interface UsbCamDevice {
   flashSupported?: boolean;
   connectedClients?: number;
   usbIps?: string[];
+}
+
+export interface AdbScannedDevice {
+  serial: string;
+  state: "device" | "unauthorized" | "offline" | string;
+  model?: string;
+  product?: string;
+  forwarded: boolean;
+  camLinkLive?: boolean;
+  camLinkProto?: string;
+  camLinkPort?: number;
 }
 
 export type PeerConnectionPhase =
@@ -116,42 +138,102 @@ export const FACE_PRESETS: FacePreset[] = [
 
 export const LUCY_MODELS: Array<{
   id: LucyModelId;
+  category: LucyModelCategory;
   label: string;
+  versionTag: string;
   badge: string;
   supportsFast: boolean;
   summary: string;
 }> = [
   {
-    id: "lucy-2.5",
-    label: "Panda V2.5",
-    badge: "720p · Rápido",
+    id: "lucy-2.6",
+    category: "edit",
+    label: "Panda Edit v2.6",
+    versionTag: "lucy-2.6",
+    badge: "720p/1080p · Fast",
     supportsFast: true,
     summary:
-      "Motor equilibrado en tiempo real con respuesta rápida.",
+      "Edición facial e identidad en tiempo real v2.6 de máxima fidelidad y sincronía labial.",
+  },
+  {
+    id: "lucy-2.5",
+    category: "edit",
+    label: "Panda Edit v2.5",
+    versionTag: "lucy-2.5",
+    badge: "720p · Fast",
+    supportsFast: true,
+    summary:
+      "Motor equilibrado en tiempo real v2.5 con baja latencia y estabilidad continua.",
   },
   {
     id: "lucy-2.1",
-    label: "Panda V2.1",
-    badge: "720p · Personaje",
+    category: "edit",
+    label: "Panda Edit v2.1",
+    versionTag: "lucy-2.1",
+    badge: "720p · Clásico",
     supportsFast: false,
     summary:
-      "Enfocado en intercambio de personajes e identidad.",
-  },
-  {
-    id: "lucy-2.6",
-    label: "Panda V2.6",
-    badge: "720p · Alta Fidelidad",
-    supportsFast: true,
-    summary:
-      "Mayor fidelidad facial y sincronía labial.",
+      "Versión clásica v2.1 orientada a cambio de personaje e identidad estable.",
   },
   {
     id: "lucy-latest",
-    label: "Panda Auto",
-    badge: "Auto",
+    category: "edit",
+    label: "Panda Edit Latest",
+    versionTag: "lucy-latest",
+    badge: "Auto · Fast",
     supportsFast: true,
     summary:
-      "Selección automática del motor más reciente.",
+      "Alias dinámico que apunta automáticamente a la versión de edición más reciente en la API.",
+  },
+  {
+    id: "lucy-restyle-2",
+    category: "restyle",
+    label: "Panda Restyle v2",
+    versionTag: "lucy-restyle-2",
+    badge: "Estilo Vivo · 30fps",
+    supportsFast: false,
+    summary:
+      "Transformación de estilo visual y ambientación completa en tiempo real mediante prompt o referencia.",
+  },
+  {
+    id: "lucy-restyle-latest",
+    category: "restyle",
+    label: "Panda Restyle Latest",
+    versionTag: "lucy-restyle-latest",
+    badge: "Auto · Estilo",
+    supportsFast: false,
+    summary:
+      "Alias automático hacia la versión más nueva de Restyle en tiempo real de la API.",
+  },
+  {
+    id: "lucy-vton-3.6",
+    category: "vton",
+    label: "Panda Try-On v3.6",
+    versionTag: "lucy-vton-3.6",
+    badge: "VTON 3.6 · Fast",
+    supportsFast: true,
+    summary:
+      "Prueba virtual de vestuario y apariencia v3.6 en video en vivo con soporte Fast Mode.",
+  },
+  {
+    id: "lucy-vton-3.5",
+    category: "vton",
+    label: "Panda Try-On v3.5",
+    versionTag: "lucy-vton-3.5",
+    badge: "VTON 3.5 · Fast",
+    supportsFast: true,
+    summary:
+      "Versión v3.5 para prueba virtual de prendas y cambios de estilo en vivo.",
+  },
+  {
+    id: "lucy-vton-latest",
+    category: "vton",
+    label: "Panda Try-On Latest",
+    versionTag: "lucy-vton-latest",
+    badge: "Auto · VTON",
+    supportsFast: true,
+    summary:
+      "Alias automático para ejecutar siempre la última versión Try-On disponible en la API.",
   },
 ];
 
@@ -196,5 +278,37 @@ export interface KeySlotInfo {
   label: string;
   configured: boolean;
   envVar?: string;
+}
+
+export type ApiUserRole = "admin" | "operator" | "viewer";
+
+export interface ApiUserPermissions {
+  canUseMobileP2p: boolean;
+  canUseUsb: boolean;
+  canUseWindowCapture: boolean;
+  canRecord: boolean;
+  canEditEngineSettings: boolean;
+}
+
+export interface ApiUserFunctionalSettings extends DecartApiConfig {
+  model: LucyModelId;
+  fastMode: boolean;
+  enhancePrompt: boolean;
+  defaultPrompt: string;
+}
+
+export interface ApiUserProfile {
+  id: string;
+  name: string;
+  handle: string;
+  role: ApiUserRole;
+  enabled: boolean;
+  assignedSlotId: KeySlotId;
+  allowedModels: LucyModelId[];
+  permissions: ApiUserPermissions;
+  apiSettings: ApiUserFunctionalSettings;
+  createdAt: number;
+  updatedAt: number;
+  lastAppliedAt: number | null;
 }
 

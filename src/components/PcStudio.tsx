@@ -2,10 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createDecartClient, models, type RealTimeClient } from "@decartai/sdk";
 import { QRCodeSVG } from "qrcode.react";
 import {
+  AppWindow,
   Camera,
   Check,
   Copy,
   Download,
+  ExternalLink,
   FileCode2,
   Flashlight,
   FlipHorizontal2,
@@ -14,12 +16,14 @@ import {
   Maximize2,
   Minimize2,
   MonitorPlay,
+  PictureInPicture2,
   Play,
   RefreshCw,
   RotateCcw,
   RotateCw,
   Search,
   Settings2,
+  ShieldCheck,
   SlidersHorizontal,
   Smartphone,
   Sparkles,
@@ -35,6 +39,8 @@ import {
   DEFAULT_DECART_API_CONFIG,
   FACE_PRESETS,
   LUCY_MODELS,
+  type AdbScannedDevice,
+  type ApiUserProfile,
   type DecartApiConfig,
   type DecartCodec,
   type DecartMirrorMode,
@@ -43,6 +49,7 @@ import {
   type FacePreset,
   type KeySlotId,
   type KeySlotInfo,
+  type LucyModelCategory,
   type LucyModelId,
   type MobileStreamMeta,
   type PeerConnectionPhase,
@@ -99,6 +106,9 @@ interface PcStudioProps {
   onRefreshHealth: () => void;
   broadcastMode: boolean;
   onBroadcastModeChange: (active: boolean) => void;
+  activeApiUser: ApiUserProfile | null;
+  appliedRevision: number;
+  onOpenAdmin: () => void;
 }
 
 const PROMPT_TEMPLATES: Array<{ label: string; text: string }> = [
@@ -111,8 +121,12 @@ const PROMPT_TEMPLATES: Array<{ label: string; text: string }> = [
     text: "Swap only the facial features from the reference image onto the speaker while keeping the speaker's current hairstyle, clothing, lighting, and room background intact.",
   },
   {
-    label: "Iluminación cinematográfica",
-    text: "Replace the person's face with the exact identity from the reference image, rendered with clean soft studio key light, sharp eyes, and natural lip synchronization.",
+    label: "Estilo cinematográfico (Restyle)",
+    text: "Transform the entire video scene into a moody cinematic neo-noir aesthetic with crisp studio rim lighting and natural film grain while preserving exact motion.",
+  },
+  {
+    label: "Prueba de vestuario (Try-On)",
+    text: "Apply the garment from the reference image naturally onto the speaker with accurate fabric folds, realistic lighting, and seamless torso movement.",
   },
 ];
 
@@ -173,7 +187,8 @@ interface UsbDeviceDetectorProps {
   usbLiveDevice: UsbCamDevice | null;
   usbPhase: UsbCamPhase;
   usbFfmpegAvailable: boolean | null;
-  connectBatContent: string;
+  adbDevices: AdbScannedDevice[];
+  adbInstalled: boolean | null;
   onSelectDevice: (device: UsbCamDevice) => void;
   onRescanNetworkUsb: () => void;
 }
@@ -185,7 +200,8 @@ export const UsbDeviceDetector: React.FC<UsbDeviceDetectorProps> = ({
   usbLiveDevice,
   usbPhase,
   usbFfmpegAvailable,
-  connectBatContent,
+  adbDevices,
+  adbInstalled,
   onSelectDevice,
   onRescanNetworkUsb,
 }) => {
@@ -194,27 +210,7 @@ export const UsbDeviceDetector: React.FC<UsbDeviceDetectorProps> = ({
   const [webUsbStatus, setWebUsbStatus] =
     useState<UsbHardwareConnectionState>("desconectado");
   const [webUsbNote, setWebUsbNote] = useState<string | null>(null);
-  const [batPreviewText, setBatPreviewText] =
-    useState<string>(connectBatContent);
   const [copiedBat, setCopiedBat] = useState<boolean>(false);
-
-  useEffect(() => {
-    if (connectBatContent) {
-      setBatPreviewText(connectBatContent);
-    }
-  }, [connectBatContent]);
-
-  useEffect(() => {
-    if (batPreviewText) return;
-    fetch("/scripts/connect.bat", { cache: "no-store" })
-      .then((res) => (res.ok ? res.text() : ""))
-      .then((text) => {
-        if (text) setBatPreviewText(text);
-      })
-      .catch(() => {
-        // Fallback handled by parent /api/usb-cam/connect-bat loader
-      });
-  }, [batPreviewText]);
 
   const mapWebUsbDevice = useCallback(
     (d: WebUsbApiDevice, idx: number): WebUsbDeviceSummary => ({
@@ -324,9 +320,11 @@ export const UsbDeviceDetector: React.FC<UsbDeviceDetectorProps> = ({
   };
 
   const handleCopyBat = async () => {
-    if (!batPreviewText) return;
     try {
-      await navigator.clipboard.writeText(batPreviewText);
+      const res = await fetch("/api/usb-cam/connect-bat?format=json");
+      const data = (await res.json()) as { content?: string };
+      if (!data.content) return;
+      await navigator.clipboard.writeText(data.content);
       setCopiedBat(true);
       window.setTimeout(() => setCopiedBat(false), 1800);
     } catch {
@@ -334,15 +332,20 @@ export const UsbDeviceDetector: React.FC<UsbDeviceDetectorProps> = ({
     }
   };
 
+  const activeAdbCount = adbDevices.filter(
+    (d) => d.state === "device" || d.state === "unauthorized"
+  ).length;
   const isConnected =
     webUsbStatus === "conectado" ||
     webUsbDevices.length > 0 ||
+    activeAdbCount > 0 ||
     usbDevices.length > 0 ||
     usbPhase === "live";
   const connectionState: UsbHardwareConnectionState = isConnected
     ? "conectado"
     : "desconectado";
-  const totalDetected = webUsbDevices.length + usbDevices.length;
+  const totalDetected =
+    webUsbDevices.length + Math.max(usbDevices.length, activeAdbCount);
 
   return (
     <div className="rounded-lg bg-[#090C10] border border-white/10 p-3 space-y-2.5">
@@ -440,6 +443,66 @@ export const UsbDeviceDetector: React.FC<UsbDeviceDetectorProps> = ({
         </div>
       )}
 
+      {/* Background ADB devices scanner (every 5s from mount) */}
+      {adbDevices.length > 0 && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-500">
+            <span>ADB USB (adb devices · cada 5s)</span>
+            <span className="text-emerald-400">Activo</span>
+          </div>
+          {adbDevices.map((dev) => {
+            const isAuthorized = dev.state === "device";
+            const isUnauthorized = dev.state === "unauthorized";
+            return (
+              <div
+                key={dev.serial}
+                className={`px-2.5 py-1.5 rounded bg-[#11161F] border flex items-center justify-between gap-2 text-[11px] ${
+                  isAuthorized
+                    ? "border-emerald-500/30"
+                    : isUnauthorized
+                    ? "border-amber-500/40"
+                    : "border-white/10"
+                }`}
+              >
+                <span className="flex items-center gap-1.5 text-slate-200 truncate">
+                  <Usb
+                    className={`w-3 h-3 shrink-0 ${
+                      isAuthorized
+                        ? "text-emerald-400"
+                        : isUnauthorized
+                        ? "text-amber-300"
+                        : "text-slate-400"
+                    }`}
+                  />
+                  <span className="truncate font-mono">
+                    {dev.model ? `${dev.model} (${dev.serial})` : dev.serial}
+                  </span>
+                </span>
+                <span
+                  className={`font-mono tabular-nums shrink-0 ${
+                    isAuthorized
+                      ? "text-emerald-300"
+                      : isUnauthorized
+                      ? "text-amber-300"
+                      : "text-slate-400"
+                  }`}
+                >
+                  {isAuthorized
+                    ? dev.camLinkLive
+                      ? "CamLink VIVO"
+                      : dev.forwarded
+                      ? "ADB TCP OK"
+                      : "Listo"
+                    : isUnauthorized
+                    ? "Autoriza en móvil"
+                    : dev.state}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* Active CamLink USB TCP/HTTP endpoints */}
       {usbDevices.length > 0 ? (
         <div className="space-y-1">
@@ -472,9 +535,11 @@ export const UsbDeviceDetector: React.FC<UsbDeviceDetectorProps> = ({
         </div>
       ) : (
         <div className="text-[11px] text-slate-400">
-          {webUsbDevices.length > 0
+          {webUsbDevices.length > 0 || activeAdbCount > 0
             ? "Móvil USB detectado por hardware; abre CamLink USB y pulsa Transmitir para enlazar video."
-            : "Ningún móvil USB detectado aún por navigator.usb ni por red RNDIS/ADB."}
+            : adbInstalled === false
+            ? "Ningún móvil USB detectado aún (sin ADB instalado en PATH; usando WebUSB y red RNDIS/UDP)."
+            : "Ningún móvil USB detectado aún (escaneando adb devices cada 5s, WebUSB y red RNDIS)."}
         </div>
       )}
 
@@ -482,48 +547,39 @@ export const UsbDeviceDetector: React.FC<UsbDeviceDetectorProps> = ({
         <div className="text-[11px] text-amber-200">{webUsbNote}</div>
       )}
 
-      {/* Card Text Viewer for public/scripts/connect.bat */}
-      <div className="pt-2 border-t border-white/10 space-y-1.5">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-200 min-w-0">
-            <FileCode2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-            <span className="truncate font-mono">
-              public/scripts/connect.bat
-            </span>
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              onClick={() => void handleCopyBat()}
-              disabled={!batPreviewText}
-              className="px-2 py-1 rounded bg-[#11161F] border border-white/10 text-[11px] text-slate-200 hover:text-white flex items-center gap-1 whitespace-nowrap disabled:opacity-40"
-            >
-              {copiedBat ? (
-                <>
-                  <Check className="w-3 h-3 text-emerald-400" />
-                  <span>Copiado</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="w-3 h-3" />
-                  <span>Copiar</span>
-                </>
-              )}
-            </button>
-            <a
-              href="/api/usb-cam/connect-bat"
-              download="connect.bat"
-              className="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-[11px] font-medium text-white flex items-center gap-1 whitespace-nowrap"
-            >
-              <Download className="w-3 h-3" />
-              <span>Descargar</span>
-            </a>
-          </div>
+      {/* Compact connect.bat launcher bar */}
+      <div className="pt-2 border-t border-white/10 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-300 min-w-0">
+          <FileCode2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+          <span className="truncate">Puente USB PC (connect.bat)</span>
         </div>
-
-        <pre className="max-h-36 overflow-auto rounded bg-[#11161F] border border-white/10 p-2 font-mono text-[10px] leading-relaxed text-slate-300 whitespace-pre">
-          {batPreviewText || "Cargando public/scripts/connect.bat..."}
-        </pre>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => void handleCopyBat()}
+            className="px-2 py-1 rounded bg-[#11161F] border border-white/10 text-[11px] text-slate-200 hover:text-white flex items-center gap-1 whitespace-nowrap"
+          >
+            {copiedBat ? (
+              <>
+                <Check className="w-3 h-3 text-emerald-400" />
+                <span>Copiado</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3 h-3" />
+                <span>Copiar</span>
+              </>
+            )}
+          </button>
+          <a
+            href="/api/usb-cam/connect-bat"
+            download="connect.bat"
+            className="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-[11px] font-medium text-white flex items-center gap-1 whitespace-nowrap"
+          >
+            <Download className="w-3 h-3" />
+            <span>Descargar</span>
+          </a>
+        </div>
       </div>
     </div>
   );
@@ -537,6 +593,9 @@ export const PcStudio: React.FC<PcStudioProps> = ({
   onRefreshHealth,
   broadcastMode,
   onBroadcastModeChange,
+  activeApiUser,
+  appliedRevision,
+  onOpenAdmin,
 }) => {
   // Source & Layout State
   const [sourceMode, setSourceMode] = useState<VideoSourceMode>("mobile");
@@ -561,6 +620,20 @@ export const PcStudio: React.FC<PcStudioProps> = ({
   const [hasInputStream, setHasInputStream] = useState<boolean>(false);
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
 
+  // PC Window / Display Capture State (getDisplayMedia)
+  const [windowCapturePhase, setWindowCapturePhase] = useState<
+    "idle" | "selecting" | "live" | "error"
+  >("idle");
+  const [windowCaptureLabel, setWindowCaptureLabel] = useState<string | null>(
+    null
+  );
+  const [windowCaptureResolution, setWindowCaptureResolution] = useState<
+    string | null
+  >(null);
+  const [windowCaptureNote, setWindowCaptureNote] = useState<string | null>(
+    null
+  );
+
   // USB CamLink APK Connection State
   const [usbHost, setUsbHost] = useState<string>("127.0.0.1");
   const [usbPort, setUsbPort] = useState<number>(7878);
@@ -572,6 +645,8 @@ export const PcStudio: React.FC<PcStudioProps> = ({
     null
   );
   const [usbDevices, setUsbDevices] = useState<UsbCamDevice[]>([]);
+  const [adbDevices, setAdbDevices] = useState<AdbScannedDevice[]>([]);
+  const [adbInstalled, setAdbInstalled] = useState<boolean | null>(null);
   const [usbLiveDevice, setUsbLiveDevice] = useState<UsbCamDevice | null>(null);
   const [usbGateways, setUsbGateways] = useState<string[]>([]);
   const [usbRunningInCloud, setUsbRunningInCloud] = useState<boolean>(false);
@@ -581,16 +656,18 @@ export const PcStudio: React.FC<PcStudioProps> = ({
   const [usbFps, setUsbFps] = useState<number | null>(null);
   const [usbKbps, setUsbKbps] = useState<number | null>(null);
   const [usbResolution, setUsbResolution] = useState<string | null>(null);
-  const [connectBatContent, setConnectBatContent] = useState<string>("");
 
-  // Decart AI Lucy State & Adjustable API Config
+  // PANDAFACE Realtime State & Adjustable API Config
   const [selectedKeySlot, setSelectedKeySlot] = useState<KeySlotId>(
     loadSavedKeySlot
   );
   const [exhaustedSlots, setExhaustedSlots] = useState<Record<string, boolean>>(
     {}
   );
-  const [selectedModel, setSelectedModel] = useState<LucyModelId>("lucy-2.5");
+  const [modelCategoryFilter, setModelCategoryFilter] = useState<
+    "all" | LucyModelCategory
+  >("all");
+  const [selectedModel, setSelectedModel] = useState<LucyModelId>("lucy-2.6");
   const [fastMode, setFastMode] = useState<boolean>(true);
   const [enhancePrompt, setEnhancePrompt] = useState<boolean>(true);
   const [showApiSettings, setShowApiSettings] = useState<boolean>(false);
@@ -615,6 +692,9 @@ export const PcStudio: React.FC<PcStudioProps> = ({
   }>({ state: "idle", message: "" });
   const [isApplyingLive, setIsApplyingLive] = useState<boolean>(false);
   const [hasOutputStream, setHasOutputStream] = useState<boolean>(false);
+  const [pipWindowOpen, setPipWindowOpen] = useState<boolean>(false);
+  const [outputViewersCount, setOutputViewersCount] = useState<number>(0);
+  const [copiedOutputUrl, setCopiedOutputUrl] = useState<boolean>(false);
 
   // Recording State
   const [isRecording, setIsRecording] = useState<boolean>(false);
@@ -637,6 +717,13 @@ export const PcStudio: React.FC<PcStudioProps> = ({
   const rawVideoRef = useRef<HTMLVideoElement | null>(null);
   const outputVideoRef = useRef<HTMLVideoElement | null>(null);
   const outputStageRef = useRef<HTMLDivElement | null>(null);
+  const pipWindowRef = useRef<Window | null>(null);
+  const pipVideoRef = useRef<HTMLVideoElement | null>(null);
+  const externalOutputAnchorRef = useRef<HTMLAnchorElement | null>(null);
+  const outputViewerPcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const outputViewerIceQueueRef = useRef<Map<string, RTCIceCandidateInit[]>>(
+    new Map()
+  );
   const hudHideTimerRef = useRef<number | null>(null);
   const hiddenNormalizeVideoRef = useRef<HTMLVideoElement | null>(null);
   const normalizeCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -651,6 +738,7 @@ export const PcStudio: React.FC<PcStudioProps> = ({
   const usbStreamRef = useRef<MediaStream | null>(null);
   const mjpegHandleRef = useRef<MjpegStreamHandle | null>(null);
   const webcamStreamRef = useRef<MediaStream | null>(null);
+  const windowStreamRef = useRef<MediaStream | null>(null);
   const activeDecartInputStreamRef = useRef<MediaStream | null>(null);
   const outputStreamRef = useRef<MediaStream | null>(null);
   const realtimeClientRef = useRef<RealTimeClient | null>(null);
@@ -675,6 +763,51 @@ export const PcStudio: React.FC<PcStudioProps> = ({
       // Ignore storage quota errors
     }
   }, [selectedKeySlot]);
+
+  // Apply active API user profile whenever switched, edited, or applied from Admin API
+  const lastAppliedUserRef = useRef<string>("");
+  useEffect(() => {
+    if (!activeApiUser) return;
+    const syncKey = `${activeApiUser.id}:${activeApiUser.updatedAt}:${activeApiUser.lastAppliedAt ?? 0}:${appliedRevision}`;
+    if (lastAppliedUserRef.current === syncKey) return;
+    lastAppliedUserRef.current = syncKey;
+
+    if (activeApiUser.assignedSlotId) {
+      setSelectedKeySlot(activeApiUser.assignedSlotId);
+    }
+    const allowedSet = new Set(activeApiUser.allowedModels);
+    const desiredModel = allowedSet.has(activeApiUser.apiSettings.model)
+      ? activeApiUser.apiSettings.model
+      : activeApiUser.allowedModels[0] || "lucy-2.5";
+    setSelectedModel(desiredModel);
+    setFastMode(activeApiUser.apiSettings.fastMode);
+    setEnhancePrompt(activeApiUser.apiSettings.enhancePrompt);
+    if (activeApiUser.apiSettings.defaultPrompt?.trim()) {
+      setPromptText(activeApiUser.apiSettings.defaultPrompt);
+    }
+    setApiConfig({
+      resolution: activeApiUser.apiSettings.resolution,
+      preferredVideoCodec: activeApiUser.apiSettings.preferredVideoCodec,
+      serverMirror: activeApiUser.apiSettings.serverMirror,
+      passthroughOnStart: activeApiUser.apiSettings.passthroughOnStart,
+      tokenTtlSeconds: activeApiUser.apiSettings.tokenTtlSeconds,
+      maxSessionSeconds: activeApiUser.apiSettings.maxSessionSeconds,
+      retries: activeApiUser.apiSettings.retries,
+      capacityRetryBudgetMs: activeApiUser.apiSettings.capacityRetryBudgetMs,
+      setImageTimeoutMs: activeApiUser.apiSettings.setImageTimeoutMs,
+      customBaseUrl: activeApiUser.apiSettings.customBaseUrl || "",
+      customRealtimeUrl: activeApiUser.apiSettings.customRealtimeUrl || "",
+      debugQuality: Boolean(activeApiUser.apiSettings.debugQuality),
+    });
+
+    if (
+      (sourceMode === "mobile" && !activeApiUser.permissions.canUseMobileP2p) ||
+      (sourceMode === "usb" && !activeApiUser.permissions.canUseUsb) ||
+      (sourceMode === "window" && !activeApiUser.permissions.canUseWindowCapture)
+    ) {
+      setSourceMode("webcam");
+    }
+  }, [activeApiUser, appliedRevision, sourceMode]);
 
   // Listen for OS fullscreen changes & ESC key to exit broadcast mode
   useEffect(() => {
@@ -739,10 +872,273 @@ export const PcStudio: React.FC<PcStudioProps> = ({
     return `${origin}/?mode=mobile&room=${encodeURIComponent(roomId)}`;
   }, [roomId]);
 
+  const outputShareUrl = useMemo(() => {
+    const origin = window.location.origin;
+    return `${origin}/?mode=output&room=${encodeURIComponent(roomId)}&splitcam=1`;
+  }, [roomId]);
+
   const currentModelInfo = useMemo(
     () => LUCY_MODELS.find((m) => m.id === selectedModel) || LUCY_MODELS[0],
     [selectedModel]
   );
+
+  // Sync output stream to studio preview, floating Document-PiP window, and external ?mode=output viewers
+  const syncOutputToViewerPc = useCallback(
+    async (viewerId: string, stream: MediaStream | null) => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      const existing = outputViewerPcsRef.current.get(viewerId);
+      if (existing) {
+        existing.close();
+        outputViewerPcsRef.current.delete(viewerId);
+      }
+
+      if (!stream || stream.getTracks().length === 0) {
+        ws.send(
+          JSON.stringify({
+            type: "output-status",
+            viewerId,
+            hasOutput: false,
+          })
+        );
+        return;
+      }
+
+      const pc = new RTCPeerConnection(RTC_CONFIG);
+      outputViewerPcsRef.current.set(viewerId, pc);
+      outputViewerIceQueueRef.current.set(viewerId, []);
+
+      stream.getTracks().forEach((track) => {
+        pc.addTrack(track, stream);
+      });
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate && ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: "output-ice-candidate",
+              viewerId,
+              candidate: event.candidate.toJSON(),
+            })
+          );
+        }
+      };
+
+      try {
+        const offer = await pc.createOffer();
+        const tunedSdp = prioritizeLowLatencyCodecs(offer.sdp || "");
+        await pc.setLocalDescription({ type: offer.type, sdp: tunedSdp });
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: "output-offer",
+              viewerId,
+              sdp: pc.localDescription,
+            })
+          );
+        }
+      } catch {
+        pc.close();
+        outputViewerPcsRef.current.delete(viewerId);
+      }
+    },
+    []
+  );
+
+  const broadcastOutputStreamChange = useCallback(
+    (stream: MediaStream | null) => {
+      outputStreamRef.current = stream;
+      if (outputVideoRef.current) {
+        outputVideoRef.current.srcObject = stream;
+      }
+      if (pipVideoRef.current) {
+        pipVideoRef.current.srcObject = stream;
+        if (stream) {
+          void pipVideoRef.current.play().catch(() => undefined);
+        }
+      }
+      for (const viewerId of outputViewerPcsRef.current.keys()) {
+        void syncOutputToViewerPc(viewerId, stream);
+      }
+      if (!stream && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({ type: "output-status", hasOutput: false })
+        );
+      }
+    },
+    [syncOutputToViewerPc]
+  );
+
+  // Open exclusive independent OS floating Output Window (Document Picture-in-Picture or Video PiP)
+  const openIndependentOutputWindow = useCallback(async () => {
+    if (pipWindowRef.current && !pipWindowRef.current.closed) {
+      pipWindowRef.current.close();
+      pipWindowRef.current = null;
+      pipVideoRef.current = null;
+      setPipWindowOpen(false);
+      return;
+    }
+
+    const docPip = (
+      window as Window & {
+        documentPictureInPicture?: {
+          requestWindow: (opts?: {
+            width?: number;
+            height?: number;
+          }) => Promise<Window>;
+        };
+      }
+    ).documentPictureInPicture;
+
+    if (docPip?.requestWindow) {
+      try {
+        const pipWin = await docPip.requestWindow({
+          width: 960,
+          height: 540,
+        });
+        pipWindowRef.current = pipWin;
+        setPipWindowOpen(true);
+
+        const doc = pipWin.document;
+        doc.title = "PANDAFACE · Ventana de Salida";
+        doc.body.style.margin = "0";
+        doc.body.style.background = "#000";
+        doc.body.style.width = "100vw";
+        doc.body.style.height = "100vh";
+        doc.body.style.overflow = "hidden";
+        doc.body.style.display = "flex";
+        doc.body.style.alignItems = "center";
+        doc.body.style.justifyContent = "center";
+        doc.body.style.fontFamily = "system-ui, sans-serif";
+
+        const vid = doc.createElement("video");
+        vid.autoplay = true;
+        vid.playsInline = true;
+        vid.muted = audioMuted;
+        vid.style.width = "100%";
+        vid.style.height = "100%";
+        vid.style.objectFit = outputFitMode;
+        if (mirrorOutputView) vid.style.transform = "scaleX(-1)";
+        if (outputStreamRef.current) {
+          vid.srcObject = outputStreamRef.current;
+          void vid.play().catch(() => undefined);
+        }
+        pipVideoRef.current = vid;
+
+        const hud = doc.createElement("div");
+        hud.style.cssText =
+          "position:fixed;top:10px;right:10px;display:flex;gap:6px;padding:6px 8px;border-radius:10px;background:rgba(0,0,0,0.75);border:1px solid rgba(255,255,255,0.18);opacity:0;transition:opacity 180ms ease;z-index:10;";
+
+        const makeBtn = (label: string, onClick: () => void) => {
+          const b = doc.createElement("button");
+          b.textContent = label;
+          b.style.cssText =
+            "background:rgba(255,255,255,0.12);color:#fff;border:none;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;";
+          b.onclick = onClick;
+          return b;
+        };
+
+        let localFit: "contain" | "cover" = outputFitMode;
+        let localMirror = mirrorOutputView;
+        const fitBtn = makeBtn(
+          localFit === "contain" ? "Llenar" : "Ajustar",
+          () => {
+            localFit = localFit === "contain" ? "cover" : "contain";
+            vid.style.objectFit = localFit;
+            fitBtn.textContent = localFit === "contain" ? "Llenar" : "Ajustar";
+          }
+        );
+        const mirrorBtn = makeBtn("Espejo", () => {
+          localMirror = !localMirror;
+          vid.style.transform = localMirror ? "scaleX(-1)" : "";
+        });
+        const muteBtn = makeBtn(vid.muted ? "Audio Off" : "Audio On", () => {
+          vid.muted = !vid.muted;
+          muteBtn.textContent = vid.muted ? "Audio Off" : "Audio On";
+        });
+        hud.append(fitBtn, mirrorBtn, muteBtn);
+
+        let hideT: number | undefined;
+        const showHud = () => {
+          hud.style.opacity = "1";
+          if (hideT) pipWin.clearTimeout(hideT);
+          hideT = pipWin.setTimeout(() => {
+            hud.style.opacity = "0";
+          }, 1800);
+        };
+        doc.addEventListener("mousemove", showHud);
+        doc.addEventListener("mouseenter", showHud);
+
+        doc.body.append(vid, hud);
+        pipWin.addEventListener("pagehide", () => {
+          pipWindowRef.current = null;
+          pipVideoRef.current = null;
+          setPipWindowOpen(false);
+        });
+        return;
+      } catch {
+        // Fallback below
+      }
+    }
+
+    if (
+      outputVideoRef.current &&
+      outputStreamRef.current &&
+      typeof outputVideoRef.current.requestPictureInPicture === "function"
+    ) {
+      try {
+        await outputVideoRef.current.requestPictureInPicture();
+        setPipWindowOpen(true);
+        return;
+      } catch {
+        // Fallback note below
+      }
+    }
+
+    setDecartStatusNote(
+      "Usa el enlace 'Ventana Aparte' o instala la PWA para abrir la salida independiente."
+    );
+  }, [audioMuted, mirrorOutputView, outputFitMode]);
+
+  const launchSeparateOutputWindow = useCallback(async () => {
+    try {
+      const res = await fetch("/api/output-window/launch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomId }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        supported?: boolean;
+      };
+      if (res.ok && data.ok) {
+        setDecartStatusNote(
+          "Ventana independiente 'PANDAFACE Salida Camara' abierta para SplitCam y WhatsApp."
+        );
+        return;
+      }
+    } catch {
+      // Fallback to target="_blank" link / PWA
+    }
+
+    if (externalOutputAnchorRef.current) {
+      externalOutputAnchorRef.current.click();
+      setDecartStatusNote(
+        "Salida abierta aparte. Instala la PWA ('Instalar PWA') para ventana sin barra."
+      );
+    }
+  }, [roomId]);
+
+  const handleCopyOutputUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(outputShareUrl);
+      setCopiedOutputUrl(true);
+      window.setTimeout(() => setCopiedOutputUrl(false), 1800);
+    } catch {
+      // Ignore clipboard failure
+    }
+  };
 
   // Bind raw preview video element whenever layout or input changes
   const syncRawVideoElement = useCallback((stream: MediaStream | null) => {
@@ -758,6 +1154,7 @@ export const PcStudio: React.FC<PcStudioProps> = ({
   const getActiveRawStream = useCallback((): MediaStream | null => {
     if (sourceMode === "mobile") return phoneStreamRef.current;
     if (sourceMode === "usb") return usbStreamRef.current;
+    if (sourceMode === "window") return windowStreamRef.current;
     return webcamStreamRef.current;
   }, [sourceMode]);
 
@@ -905,7 +1302,7 @@ export const PcStudio: React.FC<PcStudioProps> = ({
 
         const remoteStream = event.streams[0] || new MediaStream([event.track]);
         phoneStreamRef.current = remoteStream;
-        if (sourceMode === "mobile") {
+        if (sourceModeRef.current === "mobile") {
           syncRawVideoElement(remoteStream);
         }
         setPeerPhase("connected");
@@ -930,7 +1327,7 @@ export const PcStudio: React.FC<PcStudioProps> = ({
           setPeerPhase("signaling");
         } else if (st === "disconnected" || st === "failed") {
           setPeerPhase("waiting");
-          if (sourceMode === "mobile") {
+          if (sourceModeRef.current === "mobile") {
             syncRawVideoElement(null);
           }
         }
@@ -960,8 +1357,78 @@ export const PcStudio: React.FC<PcStudioProps> = ({
 
       if (data.type === "joined" || data.type === "room-state") {
         setMobileOnline(Boolean(data.hasMobile));
+        if (typeof data.outputViewerCount === "number") {
+          setOutputViewersCount(data.outputViewerCount);
+        }
         if (data.mobileMeta) {
           setMobileMeta(data.mobileMeta as MobileStreamMeta);
+        }
+        if (Array.isArray(data.outputViewerIds)) {
+          setOutputViewersCount(data.outputViewerIds.length);
+          for (const vid of data.outputViewerIds) {
+            if (typeof vid === "string") {
+              void syncOutputToViewerPc(vid, outputStreamRef.current);
+            }
+          }
+        }
+        return;
+      }
+
+      if (
+        data.type === "output-viewer-joined" &&
+        typeof data.viewerId === "string"
+      ) {
+        setOutputViewersCount((c) => c + 1);
+        void syncOutputToViewerPc(data.viewerId, outputStreamRef.current);
+        return;
+      }
+
+      if (
+        data.type === "output-viewer-left" &&
+        typeof data.viewerId === "string"
+      ) {
+        const oldPc = outputViewerPcsRef.current.get(data.viewerId);
+        if (oldPc) {
+          oldPc.close();
+          outputViewerPcsRef.current.delete(data.viewerId);
+        }
+        outputViewerIceQueueRef.current.delete(data.viewerId);
+        return;
+      }
+
+      if (
+        data.type === "output-answer" &&
+        typeof data.viewerId === "string" &&
+        data.sdp
+      ) {
+        const viewerPc = outputViewerPcsRef.current.get(data.viewerId);
+        if (viewerPc) {
+          await viewerPc.setRemoteDescription(
+            new RTCSessionDescription(data.sdp as RTCSessionDescriptionInit)
+          );
+          const queued =
+            outputViewerIceQueueRef.current.get(data.viewerId) || [];
+          for (const cand of queued) {
+            await viewerPc.addIceCandidate(new RTCIceCandidate(cand));
+          }
+          outputViewerIceQueueRef.current.set(data.viewerId, []);
+        }
+        return;
+      }
+
+      if (
+        data.type === "output-ice-candidate" &&
+        typeof data.viewerId === "string" &&
+        data.candidate
+      ) {
+        const viewerPc = outputViewerPcsRef.current.get(data.viewerId);
+        const cand = data.candidate as RTCIceCandidateInit;
+        if (viewerPc && viewerPc.remoteDescription) {
+          await viewerPc.addIceCandidate(new RTCIceCandidate(cand));
+        } else {
+          const list = outputViewerIceQueueRef.current.get(data.viewerId) || [];
+          list.push(cand);
+          outputViewerIceQueueRef.current.set(data.viewerId, list);
         }
         return;
       }
@@ -1029,14 +1496,27 @@ export const PcStudio: React.FC<PcStudioProps> = ({
 
     ws.onclose = () => {
       setMobileOnline(false);
+      for (const pc of outputViewerPcsRef.current.values()) {
+        pc.close();
+      }
+      outputViewerPcsRef.current.clear();
     };
 
     return () => {
       ws.close();
       wsRef.current = null;
       teardownPeerConnection();
+      for (const pc of outputViewerPcsRef.current.values()) {
+        pc.close();
+      }
+      outputViewerPcsRef.current.clear();
     };
-  }, [roomId, sourceMode, syncRawVideoElement, teardownPeerConnection]);
+  }, [
+    roomId,
+    syncOutputToViewerPc,
+    syncRawVideoElement,
+    teardownPeerConnection,
+  ]);
 
   // Poll incoming P2P WebRTC stats every 1s when mobile connected
   useEffect(() => {
@@ -1098,24 +1578,10 @@ export const PcStudio: React.FC<PcStudioProps> = ({
     return () => window.clearInterval(timer);
   }, [peerPhase]);
 
-  // Sync PC-side canvas rotation live without dropping Decart AI WebRTC session
+  // Sync PC-side canvas rotation live without dropping PANDAFACE WebRTC session
   useEffect(() => {
     mjpegHandleRef.current?.setTransform({ rotationDeg: usbRotationDeg });
   }, [usbRotationDeg]);
-
-  // Load connect.bat lazily when USB tab is open
-  useEffect(() => {
-    if (sourceMode !== "usb" || connectBatContent) return;
-
-    fetch("/api/usb-cam/connect-bat?format=json")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data: { content?: string } | null) => {
-        if (data?.content) setConnectBatContent(data.content);
-      })
-      .catch(() => {
-        // Ignore asset preload failure
-      });
-  }, [connectBatContent, sourceMode]);
 
   const disconnectUsbCamera = useCallback(() => {
     if (mjpegHandleRef.current) {
@@ -1325,6 +1791,166 @@ export const PcStudio: React.FC<PcStudioProps> = ({
     return () => window.clearInterval(timer);
   }, [discoverUsbDevices, sourceMode, usbPhase]);
 
+  // Mount-time background ADB service: runs 'adb devices' every 5s regardless of active tab
+  const adbScanBusyRef = useRef<boolean>(false);
+  const sourceModeRef = useRef<VideoSourceMode>(sourceMode);
+  const usbPhaseRef = useRef<UsbCamPhase>(usbPhase);
+  const usbPortRef = useRef<number>(usbPort);
+  const connectUsbCameraRef = useRef(connectUsbCamera);
+
+  useEffect(() => {
+    sourceModeRef.current = sourceMode;
+  }, [sourceMode]);
+  useEffect(() => {
+    usbPhaseRef.current = usbPhase;
+  }, [usbPhase]);
+  useEffect(() => {
+    usbPortRef.current = usbPort;
+  }, [usbPort]);
+  useEffect(() => {
+    connectUsbCameraRef.current = connectUsbCamera;
+  }, [connectUsbCamera]);
+
+  const runAdbBackgroundScan = useCallback(async () => {
+    if (adbScanBusyRef.current) return;
+    adbScanBusyRef.current = true;
+    try {
+      const targetPort = usbPortRef.current || 7878;
+      const res = await fetch(
+        `/api/usb-cam/adb-devices?port=${encodeURIComponent(String(targetPort))}`
+      );
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        ok?: boolean;
+        adbInstalled?: boolean;
+        adbForwarded?: boolean;
+        runningInCloud?: boolean;
+        devices?: AdbScannedDevice[];
+        camLinkStatus?: {
+          live?: boolean;
+          restarting?: boolean;
+          port: number;
+          proto?: string;
+          lens?: string;
+          resolution?: string;
+          width?: number;
+          height?: number;
+          fps?: number;
+          sensorOrientation?: number;
+          torch?: boolean;
+          flashSupported?: boolean;
+          connectedClients?: number;
+        } | null;
+      };
+
+      const scannedList = Array.isArray(data.devices) ? data.devices : [];
+      setAdbDevices(scannedList);
+      if (typeof data.adbInstalled === "boolean") {
+        setAdbInstalled(data.adbInstalled);
+      }
+      if (typeof data.runningInCloud === "boolean") {
+        setUsbRunningInCloud(data.runningInCloud);
+      }
+
+      const authorized = scannedList.filter((d) => d.state === "device");
+      const unauthorized = scannedList.filter(
+        (d) => d.state === "unauthorized"
+      );
+      const status = data.camLinkStatus;
+
+      setUsbDevices((prev) => {
+        const nonAdb = prev.filter((item) => item.via !== "adb");
+        if (authorized.length === 0) {
+          return nonAdb;
+        }
+        if (status) {
+          const adbEntry: UsbCamDevice = {
+            ip: "127.0.0.1",
+            port: status.port || targetPort,
+            ctrlPort: (status.port || targetPort) + 1,
+            live: Boolean(status.live),
+            restarting: status.restarting,
+            proto: status.proto || "H264_TCP",
+            via: "adb",
+            deviceName: authorized[0].model || authorized[0].serial,
+            lens: status.lens,
+            resolution: status.resolution,
+            width: status.width,
+            height: status.height,
+            fps: status.fps,
+            sensorOrientation: status.sensorOrientation,
+            torch: status.torch,
+            flashSupported: status.flashSupported,
+            connectedClients: status.connectedClients,
+          };
+          return [adbEntry, ...nonAdb];
+        }
+        return prev;
+      });
+
+      if (usbPhaseRef.current === "idle") {
+        if (authorized.length > 0 && status) {
+          const camPort = status.port || targetPort;
+          const adbEntry: UsbCamDevice = {
+            ip: "127.0.0.1",
+            port: camPort,
+            ctrlPort: camPort + 1,
+            live: Boolean(status.live),
+            restarting: status.restarting,
+            proto: status.proto || "H264_TCP",
+            via: "adb",
+            deviceName: authorized[0].model || authorized[0].serial,
+            lens: status.lens,
+            resolution: status.resolution,
+            width: status.width,
+            height: status.height,
+            fps: status.fps,
+            sensorOrientation: status.sensorOrientation,
+            torch: status.torch,
+            flashSupported: status.flashSupported,
+            connectedClients: status.connectedClients,
+          };
+          setUsbHost("127.0.0.1");
+          setUsbPort(camPort);
+          setUsbLiveDevice(adbEntry);
+          if (status.live) {
+            setUsbStatusNote(
+              `ADB detectó CamLink USB vivo en 127.0.0.1:${camPort} (${adbEntry.deviceName}).`
+            );
+            if (sourceModeRef.current === "usb") {
+              connectUsbCameraRef.current("127.0.0.1", camPort);
+            }
+          } else {
+            setUsbStatusNote(
+              `Móvil ADB en espera (${adbEntry.deviceName}). Pulsa 'Transmitir' en CamLink USB.`
+            );
+          }
+        } else if (unauthorized.length > 0) {
+          setUsbStatusNote(
+            `Móvil ADB detectado (${unauthorized[0].serial}). Acepta 'Depuración USB' en el móvil.`
+          );
+        } else if (authorized.length > 0) {
+          setUsbHost("127.0.0.1");
+          setUsbStatusNote(
+            `ADB conectado (${authorized[0].model || authorized[0].serial}). Abre CamLink USB y pulsa Transmitir.`
+          );
+        }
+      }
+    } catch {
+      // Silent retry on next 5s tick
+    } finally {
+      adbScanBusyRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    void runAdbBackgroundScan();
+    const adbTimer = window.setInterval(() => {
+      void runAdbBackgroundScan();
+    }, 5000);
+    return () => window.clearInterval(adbTimer);
+  }, [runAdbBackgroundScan]);
+
   const sendUsbRemoteCommand = useCallback(
     async (
       action:
@@ -1387,8 +2013,130 @@ export const PcStudio: React.FC<PcStudioProps> = ({
     [usbHost, usbPort]
   );
 
-  // Handle switching between Mobile P2P, USB CamLink APK, and Local PC Webcam
+  const stopWindowCapture = useCallback(() => {
+    if (windowStreamRef.current) {
+      windowStreamRef.current.getTracks().forEach((t) => t.stop());
+      windowStreamRef.current = null;
+    }
+    setWindowCapturePhase("idle");
+    setWindowCaptureLabel(null);
+    setWindowCaptureResolution(null);
+    if (sourceModeRef.current === "window") {
+      syncRawVideoElement(null);
+    }
+  }, [syncRawVideoElement]);
+
+  const startWindowCapture = useCallback(async () => {
+    if (
+      !navigator.mediaDevices ||
+      typeof navigator.mediaDevices.getDisplayMedia !== "function"
+    ) {
+      setWindowCapturePhase("error");
+      const msg =
+        "Tu navegador no permite capturar ventanas en este contexto (requiere HTTPS o localhost).";
+      setWindowCaptureNote(msg);
+      setDecartError(msg);
+      return;
+    }
+
+    setWindowCapturePhase("selecting");
+    setWindowCaptureNote(null);
+    setDecartError(null);
+
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          frameRate: { ideal: 30, max: 60 },
+        },
+        audio: false,
+      });
+
+      const videoTrack = stream.getVideoTracks()[0];
+      if (!videoTrack) {
+        stream.getTracks().forEach((t) => t.stop());
+        setWindowCapturePhase("error");
+        setWindowCaptureNote("La ventana seleccionada no entregó pista de video.");
+        return;
+      }
+
+      if (windowStreamRef.current && windowStreamRef.current !== stream) {
+        windowStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+      windowStreamRef.current = stream;
+
+      const settings = videoTrack.getSettings();
+      const resLabel =
+        settings.width && settings.height
+          ? `${settings.width}×${settings.height}`
+          : null;
+      setWindowCaptureLabel(videoTrack.label || "Ventana seleccionada");
+      setWindowCaptureResolution(resLabel);
+      setWindowCapturePhase("live");
+      setWindowCaptureNote(
+        resLabel
+          ? `Capturando ${videoTrack.label || "ventana"} (${resLabel}).`
+          : `Capturando ${videoTrack.label || "ventana"}.`
+      );
+
+      videoTrack.addEventListener("ended", () => {
+        if (windowStreamRef.current === stream) {
+          windowStreamRef.current = null;
+          setWindowCapturePhase("idle");
+          setWindowCaptureLabel(null);
+          setWindowCaptureResolution(null);
+          setWindowCaptureNote("Captura de ventana finalizada.");
+          if (sourceModeRef.current === "window") {
+            syncRawVideoElement(null);
+          }
+        }
+      });
+
+      if (sourceModeRef.current === "window") {
+        syncRawVideoElement(stream);
+      }
+    } catch (err) {
+      const hasExisting = Boolean(
+        windowStreamRef.current &&
+          windowStreamRef.current
+            .getVideoTracks()
+            .some((t) => t.readyState === "live")
+      );
+      if (hasExisting) {
+        setWindowCapturePhase("live");
+        return;
+      }
+      setWindowCapturePhase("idle");
+      const errName = (err as { name?: string })?.name;
+      if (errName === "NotAllowedError" || errName === "AbortError") {
+        setWindowCaptureNote(
+          "Selección cancelada. Pulsa 'Elegir Ventana' para escoger una aplicación o pantalla."
+        );
+      } else {
+        const msg =
+          err instanceof Error
+            ? `No se pudo capturar la ventana: ${err.message}`
+            : "No se pudo capturar la ventana.";
+        setWindowCapturePhase("error");
+        setWindowCaptureNote(msg);
+        setDecartError(msg);
+      }
+    }
+  }, [syncRawVideoElement]);
+
+  // Handle switching between Mobile P2P, USB CamLink APK, Local PC Webcam, and Window Capture
   const handleSelectSource = async (nextSource: VideoSourceMode) => {
+    if (activeApiUser) {
+      if (
+        (nextSource === "mobile" && !activeApiUser.permissions.canUseMobileP2p) ||
+        (nextSource === "usb" && !activeApiUser.permissions.canUseUsb) ||
+        (nextSource === "window" && !activeApiUser.permissions.canUseWindowCapture)
+      ) {
+        setDecartError(
+          `El usuario "${activeApiUser.name}" no tiene permiso para usar esa fuente de video.`
+        );
+        return;
+      }
+    }
     setSourceMode(nextSource);
     setDecartError(null);
 
@@ -1412,6 +2160,19 @@ export const PcStudio: React.FC<PcStudioProps> = ({
             ? `No se pudo abrir la webcam del PC: ${err.message}`
             : "No se pudo abrir la webcam del PC."
         );
+      }
+    } else if (nextSource === "window") {
+      const hasLiveWindow = Boolean(
+        windowStreamRef.current &&
+          windowStreamRef.current
+            .getVideoTracks()
+            .some((t) => t.readyState === "live")
+      );
+      if (hasLiveWindow && windowStreamRef.current) {
+        syncRawVideoElement(windowStreamRef.current);
+      } else {
+        syncRawVideoElement(null);
+        void startWindowCapture();
       }
     } else if (nextSource === "usb") {
       syncRawVideoElement(usbStreamRef.current);
@@ -1451,17 +2212,15 @@ export const PcStudio: React.FC<PcStudioProps> = ({
       activeDecartInputStreamRef.current &&
       activeDecartInputStreamRef.current !== phoneStreamRef.current &&
       activeDecartInputStreamRef.current !== usbStreamRef.current &&
-      activeDecartInputStreamRef.current !== webcamStreamRef.current
+      activeDecartInputStreamRef.current !== webcamStreamRef.current &&
+      activeDecartInputStreamRef.current !== windowStreamRef.current
     ) {
       activeDecartInputStreamRef.current
         .getVideoTracks()
         .forEach((t) => t.stop());
     }
     activeDecartInputStreamRef.current = null;
-    outputStreamRef.current = null;
-    if (outputVideoRef.current) {
-      outputVideoRef.current.srcObject = null;
-    }
+    broadcastOutputStreamChange(null);
     setHasOutputStream(false);
     setDecartPhase("idle");
     setDecartStatusNote(null);
@@ -1473,20 +2232,33 @@ export const PcStudio: React.FC<PcStudioProps> = ({
       decartQuality: null,
       decartLimitingFactor: null,
     }));
-  }, [stopNormalizer]);
+  }, [broadcastOutputStreamChange, stopNormalizer]);
 
   useEffect(() => {
     return () => {
       stopDecartSession();
       disconnectUsbCamera();
+      if (pipWindowRef.current && !pipWindowRef.current.closed) {
+        pipWindowRef.current.close();
+      }
       if (webcamStreamRef.current) {
         webcamStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+      if (windowStreamRef.current) {
+        windowStreamRef.current.getTracks().forEach((t) => t.stop());
       }
     };
   }, [disconnectUsbCamera, stopDecartSession]);
 
   // Start PANDAFACE Realtime session
   const startDecartSession = useCallback(async () => {
+    if (activeApiUser && !activeApiUser.enabled) {
+      setDecartError(
+        `El usuario "${activeApiUser.name}" está suspendido por el administrador.`
+      );
+      return;
+    }
+
     const rawStream = getActiveRawStream();
     if (!rawStream || rawStream.getVideoTracks().length === 0) {
       setDecartError("Conecta primero una fuente de video.");
@@ -1512,16 +2284,24 @@ export const PcStudio: React.FC<PcStudioProps> = ({
           : false;
 
       const client = createDecartClient({
+        ...(apiConfig.customBaseUrl ? { baseUrl: apiConfig.customBaseUrl } : {}),
+        ...(apiConfig.customRealtimeUrl
+          ? { realtimeBaseUrl: apiConfig.customRealtimeUrl }
+          : {}),
         apiKeyProvider: async () => {
           const res = await fetch("/api/decart/token", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              userId: activeApiUser?.id,
               keySlot: selectedKeySlot,
               model: selectedModel,
               expiresIn: apiConfig.tokenTtlSeconds,
               ...(apiConfig.maxSessionSeconds > 0
                 ? { maxSessionDuration: apiConfig.maxSessionSeconds }
+                : {}),
+              ...(apiConfig.customBaseUrl
+                ? { baseUrl: apiConfig.customBaseUrl }
                 : {}),
             }),
           });
@@ -1547,11 +2327,9 @@ export const PcStudio: React.FC<PcStudioProps> = ({
         preferredVideoCodec: apiConfig.preferredVideoCodec,
         retries: apiConfig.retries,
         capacityRetryBudgetMs: apiConfig.capacityRetryBudgetMs,
+        debugQuality: apiConfig.debugQuality,
         onRemoteStream: (transformedStream) => {
-          outputStreamRef.current = transformedStream;
-          if (outputVideoRef.current) {
-            outputVideoRef.current.srcObject = transformedStream;
-          }
+          broadcastOutputStreamChange(transformedStream);
           setHasOutputStream(true);
         },
         onConnectionQuality: (report) => {
@@ -1646,7 +2424,9 @@ export const PcStudio: React.FC<PcStudioProps> = ({
       setDecartPhase("error");
     }
   }, [
+    activeApiUser,
     apiConfig,
+    broadcastOutputStreamChange,
     buildDecartInputStream,
     currentModelInfo.supportsFast,
     enhancePrompt,
@@ -1658,7 +2438,6 @@ export const PcStudio: React.FC<PcStudioProps> = ({
     resolveReferenceImageFile,
     selectedKeySlot,
     selectedModel,
-    sourceMode,
     stopDecartSession,
   ]);
 
@@ -1721,7 +2500,7 @@ export const PcStudio: React.FC<PcStudioProps> = ({
     }
   };
 
-  // Handle user uploading their own target face photo
+  // Handle user uploading their own target face/reference photo (revoking prior object URL)
   const handleFileUpload = async (file: File | undefined) => {
     if (!file) return;
     if (!file.type.startsWith("image/")) {
@@ -1729,6 +2508,9 @@ export const PcStudio: React.FC<PcStudioProps> = ({
       return;
     }
 
+    if (customImagePreview && customImagePreview.startsWith("blob:")) {
+      URL.revokeObjectURL(customImagePreview);
+    }
     const previewUrl = URL.createObjectURL(file);
     setCustomImageFile(file);
     setCustomImagePreview(previewUrl);
@@ -1744,13 +2526,21 @@ export const PcStudio: React.FC<PcStudioProps> = ({
     setPreflightResult("Evaluando ruta de red...");
     try {
       const client = createDecartClient({
+        ...(apiConfig.customBaseUrl ? { baseUrl: apiConfig.customBaseUrl } : {}),
+        ...(apiConfig.customRealtimeUrl
+          ? { realtimeBaseUrl: apiConfig.customRealtimeUrl }
+          : {}),
         apiKeyProvider: async () => {
           const res = await fetch("/api/decart/token", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              userId: activeApiUser?.id,
               keySlot: selectedKeySlot,
               model: selectedModel,
+              ...(apiConfig.customBaseUrl
+                ? { baseUrl: apiConfig.customBaseUrl }
+                : {}),
             }),
           });
           const data = (await res.json()) as { apiKey?: string };
@@ -1914,14 +2704,28 @@ export const PcStudio: React.FC<PcStudioProps> = ({
     <div className="max-w-[1440px] mx-auto px-4 lg:px-6 py-5 space-y-5">
       {decartConfigured === false && (
         <div className="rounded-xl bg-amber-950/35 border border-amber-500/35 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-100">
-          <span>Motor PANDAFACE sin cuenta activa en el servidor.</span>
-          <button
-            type="button"
-            onClick={() => void handleTestDecartApi()}
-            className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-xs font-semibold text-amber-100 whitespace-nowrap shrink-0"
-          >
-            Verificar estado
-          </button>
+          <span>
+            Motor PANDAFACE sin cuenta activa en el servidor. Configura{" "}
+            <code className="font-mono text-amber-200">DECART_API_KEY</code> en
+            el servidor y administra tus usuarios y parámetros en Admin API.
+          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={onOpenAdmin}
+              className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Abrir Admin API</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleTestDecartApi()}
+              className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-xs font-semibold text-amber-100 whitespace-nowrap shrink-0"
+            >
+              Verificar estado
+            </button>
+          </div>
         </div>
       )}
 
@@ -1935,8 +2739,13 @@ export const PcStudio: React.FC<PcStudioProps> = ({
               <div className="flex items-center p-0.5 rounded-lg bg-[#090C10] border border-white/10">
                 <button
                   type="button"
+                  disabled={
+                    activeApiUser
+                      ? !activeApiUser.permissions.canUseMobileP2p
+                      : false
+                  }
                   onClick={() => void handleSelectSource("mobile")}
-                  className={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
                     sourceMode === "mobile"
                       ? "bg-blue-600 text-white"
                       : "text-slate-400 hover:text-white"
@@ -1947,8 +2756,11 @@ export const PcStudio: React.FC<PcStudioProps> = ({
                 </button>
                 <button
                   type="button"
+                  disabled={
+                    activeApiUser ? !activeApiUser.permissions.canUseUsb : false
+                  }
                   onClick={() => void handleSelectSource("usb")}
-                  className={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
                     sourceMode === "usb"
                       ? "bg-blue-600 text-white"
                       : "text-slate-400 hover:text-white"
@@ -1956,6 +2768,22 @@ export const PcStudio: React.FC<PcStudioProps> = ({
                 >
                   <Usb className="w-3.5 h-3.5" />
                   <span>USB (APK)</span>
+                  {(adbDevices.some(
+                    (d) => d.state === "device" || d.state === "unauthorized"
+                  ) ||
+                    usbDevices.length > 0 ||
+                    usbPhase === "live") && (
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        adbDevices.some((d) => d.state === "device") ||
+                        usbDevices.some((d) => d.live) ||
+                        usbPhase === "live"
+                          ? "bg-emerald-400"
+                          : "bg-amber-400"
+                      }`}
+                      title="Dispositivo USB detectado"
+                    />
+                  )}
                 </button>
                 <button
                   type="button"
@@ -1968,6 +2796,29 @@ export const PcStudio: React.FC<PcStudioProps> = ({
                 >
                   <Laptop className="w-3.5 h-3.5" />
                   <span>Webcam PC</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    activeApiUser
+                      ? !activeApiUser.permissions.canUseWindowCapture
+                      : false
+                  }
+                  onClick={() => void handleSelectSource("window")}
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
+                    sourceMode === "window"
+                      ? "bg-blue-600 text-white"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <AppWindow className="w-3.5 h-3.5" />
+                  <span>Capturar Ventana</span>
+                  {windowCapturePhase === "live" && (
+                    <span
+                      className="w-2 h-2 rounded-full bg-emerald-400"
+                      title="Captura de ventana en vivo"
+                    />
+                  )}
                 </button>
               </div>
             </div>
@@ -2009,6 +2860,30 @@ export const PcStudio: React.FC<PcStudioProps> = ({
                 <FlipHorizontal2 className="w-3.5 h-3.5" />
                 <span>Espejo</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => void launchSeparateOutputWindow()}
+                title="Abrir ventana completa independiente ('PANDAFACE Salida Camara') para SplitCam y WhatsApp"
+                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 border border-emerald-400/40 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors whitespace-nowrap"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>
+                  Ventana SplitCam{outputViewersCount > 0 ? ` (${outputViewersCount})` : ""}
+                </span>
+              </button>
+
+              <a
+                ref={externalOutputAnchorRef}
+                href={outputShareUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hidden"
+                aria-hidden="true"
+                tabIndex={-1}
+              >
+                Abrir Salida Externa
+              </a>
 
               <button
                 type="button"
@@ -2060,14 +2935,32 @@ export const PcStudio: React.FC<PcStudioProps> = ({
                 />
                 {!hasInputStream && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center gap-2.5">
-                    <Camera className="w-8 h-8 text-slate-600" />
+                    {sourceMode === "window" ? (
+                      <AppWindow className="w-8 h-8 text-slate-600" />
+                    ) : (
+                      <Camera className="w-8 h-8 text-slate-600" />
+                    )}
                     <p className="text-xs font-medium text-slate-300">
                       {sourceMode === "mobile"
                         ? "Esperando cámara móvil"
                         : sourceMode === "usb"
                         ? "Esperando cámara USB"
+                        : sourceMode === "window"
+                        ? windowCapturePhase === "selecting"
+                          ? "Elige una ventana o pantalla en el selector..."
+                          : "Sin ventana capturada"
                         : "Webcam inactiva"}
                     </p>
+                    {sourceMode === "window" && (
+                      <button
+                        type="button"
+                        onClick={() => void startWindowCapture()}
+                        className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        <AppWindow className="w-3.5 h-3.5" />
+                        <span>Elegir Ventana</span>
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -2079,6 +2972,10 @@ export const PcStudio: React.FC<PcStudioProps> = ({
                     ? usbResolution
                       ? `USB ${usbResolution}`
                       : "USB Cable"
+                    : sourceMode === "window"
+                    ? windowCaptureResolution
+                      ? `Ventana ${windowCaptureResolution}`
+                      : "Ventana PC"
                     : "Webcam"}
                 </div>
               </div>
@@ -2300,9 +3197,16 @@ export const PcStudio: React.FC<PcStudioProps> = ({
 
                 <button
                   type="button"
-                  disabled={!hasOutputStream && !isRecording}
+                  disabled={
+                    (!hasOutputStream && !isRecording) ||
+                    Boolean(
+                      activeApiUser &&
+                        !activeApiUser.permissions.canRecord &&
+                        !isRecording
+                    )
+                  }
                   onClick={handleToggleRecording}
-                  className={`px-3 py-2 rounded-lg border text-xs font-medium flex items-center gap-1.5 whitespace-nowrap disabled:opacity-40 ${
+                  className={`px-3 py-2 rounded-lg border text-xs font-medium flex items-center gap-1.5 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
                     isRecording
                       ? "bg-rose-600/20 border-rose-500/50 text-rose-200"
                       : "bg-[#090C10] border-white/10 text-slate-300 hover:text-white"
@@ -2314,11 +3218,48 @@ export const PcStudio: React.FC<PcStudioProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => void toggleOsFullscreen()}
-                  className="px-3 py-2 rounded-lg bg-[#090C10] border border-white/10 text-xs font-medium text-slate-200 hover:text-white flex items-center gap-1.5 whitespace-nowrap"
+                  onClick={() => void openIndependentOutputWindow()}
+                  title="Abrir mini ventana flotante Picture-in-Picture"
+                  className={`px-3 py-2 rounded-lg border text-xs font-medium flex items-center gap-1.5 whitespace-nowrap ${
+                    pipWindowOpen
+                      ? "bg-emerald-950/60 border-emerald-500/50 text-emerald-200"
+                      : "bg-[#090C10] border-white/10 text-slate-300 hover:text-white"
+                  }`}
                 >
-                  <Maximize2 className="w-3.5 h-3.5 text-blue-400" />
-                  <span>Fullscreen</span>
+                  <PictureInPicture2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>{pipWindowOpen ? "Cerrar PiP" : "Mini PiP"}</span>
+                </button>
+
+                <a
+                  href={outputShareUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-2 rounded-lg bg-[#090C10] border border-white/10 text-xs font-medium text-emerald-300 hover:text-emerald-200 flex items-center gap-1.5 whitespace-nowrap"
+                  title="Abrir salida exclusiva en ventana o pestaña separada / OBS"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>
+                    Ventana Aparte{outputViewersCount > 0 ? ` (${outputViewersCount})` : ""}
+                  </span>
+                </a>
+
+                <button
+                  type="button"
+                  onClick={() => void handleCopyOutputUrl()}
+                  className="px-3 py-2 rounded-lg bg-[#090C10] border border-white/10 text-xs font-medium text-slate-300 hover:text-white flex items-center gap-1.5 whitespace-nowrap"
+                  title="Copiar enlace exclusivo de salida para OBS Browser Source"
+                >
+                  {copiedOutputUrl ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>URL Copiada</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>URL Salida</span>
+                    </>
+                  )}
                 </button>
               </div>
             </div>
@@ -2430,13 +3371,14 @@ export const PcStudio: React.FC<PcStudioProps> = ({
                 </span>
               </div>
 
-              {/* UsbDeviceDetector: WebUSB navigator.usb.getDevices() + live connect.bat viewer */}
+              {/* UsbDeviceDetector: WebUSB navigator.usb.getDevices() + 5s ADB scan */}
               <UsbDeviceDetector
                 usbDevices={usbDevices}
                 usbLiveDevice={usbLiveDevice}
                 usbPhase={usbPhase}
                 usbFfmpegAvailable={usbFfmpegAvailable}
-                connectBatContent={connectBatContent}
+                adbDevices={adbDevices}
+                adbInstalled={adbInstalled}
                 onSelectDevice={(dev) => {
                   setUsbLiveDevice(dev);
                   setUsbHost(dev.ip);
@@ -2598,29 +3540,6 @@ export const PcStudio: React.FC<PcStudioProps> = ({
                 </button>
               </div>
 
-              {usbDevices.length > 0 && (
-                <div className="space-y-1">
-                  <div className="text-[11px] text-slate-400">
-                    Móviles detectados ({usbDevices.length})
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {usbDevices.map((d) => (
-                      <button
-                        key={`${d.ip}:${d.port}`}
-                        type="button"
-                        onClick={() => {
-                          setUsbLiveDevice(d);
-                          connectUsbCamera(d.ip, d.port);
-                        }}
-                        className="px-2.5 py-1 rounded bg-[#090C10] border border-emerald-500/40 font-mono tabular-nums text-[11px] text-emerald-300 hover:text-white whitespace-nowrap"
-                      >
-                        {d.ip}:{d.port} · {d.via}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               {usbDevices.length === 0 && usbGateways.length > 0 && (
                 <div className="space-y-1">
                   <div className="text-[11px] text-slate-400">
@@ -2733,6 +3652,79 @@ export const PcStudio: React.FC<PcStudioProps> = ({
               {usbStatusNote && (
                 <div className="rounded-lg bg-[#090C10] border border-white/10 px-3 py-2 text-[11px] text-slate-300 leading-relaxed">
                   {usbStatusNote}
+                </div>
+              )}
+            </div>
+          ) : sourceMode === "window" ? (
+            <div className="rounded-xl bg-[#11161F] border border-white/10 p-4 space-y-3.5">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold text-white">
+                  01. Capturar Ventana (PC)
+                </h2>
+                <span
+                  className={`text-xs font-medium whitespace-nowrap ${
+                    windowCapturePhase === "live"
+                      ? "text-emerald-400"
+                      : windowCapturePhase === "selecting"
+                      ? "text-blue-400"
+                      : windowCapturePhase === "error"
+                      ? "text-rose-400"
+                      : "text-slate-400"
+                  }`}
+                >
+                  {windowCapturePhase === "live"
+                    ? "Capturando en vivo"
+                    : windowCapturePhase === "selecting"
+                    ? "Seleccionando..."
+                    : windowCapturePhase === "error"
+                    ? "Error"
+                    : "Inactiva"}
+                </span>
+              </div>
+
+              <div className="rounded-lg bg-[#090C10] border border-white/10 px-3 py-2.5 space-y-1">
+                <div className="text-[11px] text-slate-400">
+                  Fuente de pantalla / ventana activa
+                </div>
+                <div className="flex items-center justify-between gap-2 text-xs font-medium text-slate-100">
+                  <span className="truncate">
+                    {windowCaptureLabel || "Ninguna ventana seleccionada"}
+                  </span>
+                  {windowCaptureResolution && (
+                    <span className="font-mono tabular-nums text-[11px] text-emerald-300 shrink-0">
+                      {windowCaptureResolution}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => void startWindowCapture()}
+                  className="py-2 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white flex items-center justify-center gap-1.5 whitespace-nowrap"
+                >
+                  <AppWindow className="w-3.5 h-3.5" />
+                  <span>
+                    {windowCapturePhase === "live"
+                      ? "Cambiar Ventana"
+                      : "Elegir Ventana"}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  disabled={windowCapturePhase !== "live"}
+                  onClick={stopWindowCapture}
+                  className="py-2 px-3 rounded-lg bg-[#090C10] hover:bg-[#161D29] border border-white/15 text-xs font-medium text-slate-200 hover:text-white flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-40"
+                >
+                  <Square className="w-3.5 h-3.5 text-rose-400" />
+                  <span>Detener</span>
+                </button>
+              </div>
+
+              {windowCaptureNote && (
+                <div className="rounded-lg bg-[#090C10] border border-white/10 px-3 py-2 text-[11px] text-slate-300 leading-relaxed">
+                  {windowCaptureNote}
                 </div>
               )}
             </div>
@@ -2875,6 +3867,26 @@ export const PcStudio: React.FC<PcStudioProps> = ({
               </div>
             </div>
 
+            {/* Active API User Strip */}
+            <div className="flex items-center justify-between gap-2 rounded-lg bg-[#090C10] border border-white/10 px-3 py-2 text-[11px]">
+              <div className="min-w-0">
+                <div className="text-slate-400">Usuario Activo</div>
+                <div className="font-medium text-white truncate">
+                  {activeApiUser
+                    ? `${activeApiUser.name} (${activeApiUser.role.toUpperCase()})`
+                    : "Predeterminado del Servidor"}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onOpenAdmin}
+                className="px-2.5 py-1 rounded bg-[#161D29] hover:bg-[#1E2736] border border-white/10 text-[11px] font-medium text-emerald-300 flex items-center gap-1 whitespace-nowrap shrink-0"
+              >
+                <ShieldCheck className="w-3 h-3" />
+                <span>Administrar</span>
+              </button>
+            </div>
+
             {/* Multi-Slot Server Key Switcher */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-[11px]">
@@ -2942,22 +3954,74 @@ export const PcStudio: React.FC<PcStudioProps> = ({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 bg-[#090C10] p-1 rounded-lg border border-white/10">
-              {LUCY_MODELS.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  disabled={isLucyLive}
-                  onClick={() => setSelectedModel(m.id)}
-                  className={`py-2 px-1.5 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap disabled:opacity-60 ${
-                    selectedModel === m.id
-                      ? "bg-blue-600 text-white"
-                      : "text-slate-400 hover:text-white"
-                  }`}
-                >
-                  {m.label}
-                </button>
-              ))}
+            {/* All Available Realtime API Model Versions */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] text-slate-400">
+                  Versión de Modelo API
+                </span>
+                <div className="flex items-center gap-1 bg-[#090C10] p-0.5 rounded-md border border-white/10">
+                  {(
+                    [
+                      { id: "all", label: "Todos" },
+                      { id: "edit", label: "Edit" },
+                      { id: "restyle", label: "Restyle" },
+                      { id: "vton", label: "Try-On" },
+                    ] as const
+                  ).map((cat) => (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setModelCategoryFilter(cat.id)}
+                      className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                        modelCategoryFilter === cat.id
+                          ? "bg-[#1C2432] text-white"
+                          : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      {cat.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 bg-[#090C10] p-1.5 rounded-lg border border-white/10 max-h-56 overflow-y-auto">
+                {LUCY_MODELS.filter(
+                  (m) =>
+                    modelCategoryFilter === "all" ||
+                    m.category === modelCategoryFilter
+                ).map((m) => {
+                  const isAllowed = activeApiUser
+                    ? activeApiUser.allowedModels.includes(m.id)
+                    : true;
+                  const active = selectedModel === m.id;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      disabled={isLucyLive || !isAllowed}
+                      onClick={() => setSelectedModel(m.id)}
+                      className={`px-2.5 py-2 rounded-md text-left transition-colors disabled:opacity-45 disabled:cursor-not-allowed border ${
+                        active
+                          ? "bg-blue-600/20 border-blue-500 text-white"
+                          : "bg-[#11161F]/70 border-white/5 text-slate-300 hover:border-white/20 hover:text-white"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="text-[11px] font-semibold truncate">
+                          {m.label}
+                        </span>
+                        <span className="font-mono text-[10px] text-slate-400 shrink-0">
+                          {m.versionTag}
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5 truncate">
+                        {m.badge}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <p className="text-[11px] text-slate-400 leading-relaxed">
@@ -3037,19 +4101,30 @@ export const PcStudio: React.FC<PcStudioProps> = ({
             <div className="pt-2 border-t border-white/10">
               <button
                 type="button"
+                disabled={
+                  activeApiUser
+                    ? !activeApiUser.permissions.canEditEngineSettings
+                    : false
+                }
                 onClick={() => setShowApiSettings((s) => !s)}
-                className="w-full flex items-center justify-between py-1 text-xs font-medium text-slate-200 hover:text-white"
+                className="w-full flex items-center justify-between py-1 text-xs font-medium text-slate-200 hover:text-white disabled:opacity-45 disabled:cursor-not-allowed"
               >
                 <span className="flex items-center gap-1.5">
                   <Settings2 className="w-3.5 h-3.5 text-blue-400" />
                   <span>Ajustes del Motor</span>
                 </span>
                 <span className="text-[11px] text-slate-400">
-                  {showApiSettings ? "Ocultar" : `${apiConfig.resolution} · ${apiConfig.preferredVideoCodec.toUpperCase()}`}
+                  {activeApiUser && !activeApiUser.permissions.canEditEngineSettings
+                    ? "Bloqueado por Admin"
+                    : showApiSettings
+                    ? "Ocultar"
+                    : `${apiConfig.resolution} · ${apiConfig.preferredVideoCodec.toUpperCase()}`}
                 </span>
               </button>
 
-              {showApiSettings && (
+              {showApiSettings &&
+                (!activeApiUser ||
+                  activeApiUser.permissions.canEditEngineSettings) && (
                 <div className="mt-3 space-y-3 pt-3 border-t border-white/10 text-xs">
                   {/* Resolution & Codec */}
                   <div className="grid grid-cols-2 gap-2.5">

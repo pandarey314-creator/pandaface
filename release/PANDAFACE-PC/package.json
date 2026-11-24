@@ -1,0 +1,13 @@
+{
+  "name": "pandaface-pc",
+  "version": "1.0.0",
+  "private": true,
+  "bin": "server.cjs",
+  "pkg": {
+    "assets": [
+      "dist/**/*",
+      "public/**/*",
+      ".env.example"
+    ]
+  }
+}

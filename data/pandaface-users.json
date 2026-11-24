@@ -1,0 +1,94 @@
+{
+  "activeUserId": "usr_ef7f614373",
+  "users": [
+    {
+      "id": "usr_admin",
+      "name": "Administrador Principal",
+      "handle": "admin@pandaface",
+      "role": "admin",
+      "enabled": true,
+      "assignedSlotId": "slot_1",
+      "allowedModels": [
+        "lucy-2.6",
+        "lucy-2.5",
+        "lucy-2.1",
+        "lucy-latest",
+        "lucy-restyle-2",
+        "lucy-restyle-latest",
+        "lucy-vton-3.6",
+        "lucy-vton-3.5",
+        "lucy-vton-latest"
+      ],
+      "permissions": {
+        "canUseMobileP2p": true,
+        "canUseUsb": true,
+        "canUseWindowCapture": true,
+        "canRecord": true,
+        "canEditEngineSettings": true
+      },
+      "apiSettings": {
+        "model": "lucy-2.5",
+        "resolution": "1080p",
+        "preferredVideoCodec": "h264",
+        "serverMirror": "off",
+        "fastMode": true,
+        "enhancePrompt": true,
+        "passthroughOnStart": false,
+        "tokenTtlSeconds": 300,
+        "maxSessionSeconds": 0,
+        "retries": 5,
+        "capacityRetryBudgetMs": 60000,
+        "setImageTimeoutMs": 15000,
+        "defaultPrompt": "Replace the person's face and hairstyle with the exact identity from the reference image, matching original lighting, natural skin pores, facial expressions, and background seamlessly.",
+        "customBaseUrl": "",
+        "customRealtimeUrl": "",
+        "debugQuality": false
+      },
+      "createdAt": 1795512302292,
+      "updatedAt": 1795512759944,
+      "lastAppliedAt": 1795512302356
+    },
+    {
+      "id": "usr_ef7f614373",
+      "name": "hhh",
+      "handle": "hhh",
+      "role": "operator",
+      "enabled": true,
+      "assignedSlotId": "slot_2",
+      "allowedModels": [
+        "lucy-2.5",
+        "lucy-2.1",
+        "lucy-2.6",
+        "lucy-latest"
+      ],
+      "permissions": {
+        "canUseMobileP2p": true,
+        "canUseUsb": true,
+        "canUseWindowCapture": true,
+        "canRecord": true,
+        "canEditEngineSettings": true
+      },
+      "apiSettings": {
+        "model": "lucy-2.5",
+        "resolution": "720p",
+        "preferredVideoCodec": "h264",
+        "serverMirror": "off",
+        "fastMode": true,
+        "enhancePrompt": true,
+        "passthroughOnStart": false,
+        "tokenTtlSeconds": 300,
+        "maxSessionSeconds": 0,
+        "retries": 5,
+        "capacityRetryBudgetMs": 60000,
+        "setImageTimeoutMs": 15000,
+        "defaultPrompt": "Replace the person's face and hairstyle with the exact identity from the reference image, matching original lighting, natural skin pores, facial expressions, and background seamlessly.",
+        "customBaseUrl": "",
+        "customRealtimeUrl": "",
+        "debugQuality": false
+      },
+      "createdAt": 1795512820985,
+      "updatedAt": 1795512820985,
+      "lastAppliedAt": 1795512821068
+    }
+  ]
+}
